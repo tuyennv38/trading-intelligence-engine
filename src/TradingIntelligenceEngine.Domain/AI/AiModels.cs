@@ -11,9 +11,20 @@ public enum AiAction
     WAIT
 }
 
+public enum OrderType
+{
+    MARKET,
+    LIMIT,
+    STOP
+}
+
 public sealed record AiDecision(
     AiAction Decision,
     decimal Confidence,
+    OrderType? SuggestedType,
+    decimal? SuggestedEntry,
+    decimal? SuggestedStopLoss,
+    decimal? SuggestedTakeProfit,
     IReadOnlyList<string> Reasoning,
     IReadOnlyList<string> Invalidations
 );

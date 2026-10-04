@@ -21,5 +21,6 @@ public record CandleDto(
 public record MarketAnalysisRequestDto(
     string Symbol,
     string Timeframe,
-    List<CandleDto> Candles
+    List<CandleDto> Candles,
+    Guid? SessionId = null
 );

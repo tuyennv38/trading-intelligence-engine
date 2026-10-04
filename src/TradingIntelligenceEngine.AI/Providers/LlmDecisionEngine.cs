@@ -27,9 +27,10 @@ public class LlmDecisionEngine : IAiDecisionEngine
         }
     }
 
-    public async Task<AiDecision> DecideAsync(MarketDecisionContext context, CancellationToken cancellationToken)
+    public async Task<AiDecisionResult> DecideAsync(MarketDecisionContext context, CancellationToken cancellationToken)
     {
         var prompt = BuildPrompt(context);
+        var sw = System.Diagnostics.Stopwatch.StartNew();
 
         var requestBody = new
         {
@@ -106,7 +107,13 @@ public class LlmDecisionEngine : IAiDecisionEngine
 
             if (string.IsNullOrWhiteSpace(messageContent))
         {
-            return new AiDecision(AiAction.WAIT, 0, new List<string> { "Empty AI response" }, new List<string>());
+            sw.Stop();
+            return new AiDecisionResult(
+                new AiDecision(AiAction.WAIT, 0, null, null, null, null, new List<string> { "Empty AI response" }, new List<string>()),
+                prompt,
+                responseJson,
+                sw.ElapsedMilliseconds
+            );
         }
 
         // Clean up potential markdown formatting (```json ... ```)
@@ -123,7 +130,13 @@ public class LlmDecisionEngine : IAiDecisionEngine
         // If it doesn't start with '{', it's not valid JSON. Let's return raw string as reasoning
         if (!messageContent.StartsWith("{"))
         {
-            return new AiDecision(AiAction.WAIT, 0, new List<string> { "AI returned non-JSON:", messageContent }, new List<string>());
+            sw.Stop();
+            return new AiDecisionResult(
+                new AiDecision(AiAction.WAIT, 0, null, null, null, null, new List<string> { "AI returned non-JSON:", messageContent }, new List<string>()),
+                prompt,
+                responseJson,
+                sw.ElapsedMilliseconds
+            );
         }
 
             var aiDecision = JsonSerializer.Deserialize<AiDecisionDto>(messageContent, new JsonSerializerOptions
@@ -132,12 +145,19 @@ public class LlmDecisionEngine : IAiDecisionEngine
                 Converters = { new System.Text.Json.Serialization.JsonStringEnumConverter() }
             });
 
-            return new AiDecision(
+            sw.Stop();
+            var finalDecision = new AiDecision(
                 Decision: aiDecision?.Decision ?? AiAction.WAIT,
                 Confidence: aiDecision?.Confidence ?? 0,
+                SuggestedType: aiDecision?.OrderType,
+                SuggestedEntry: aiDecision?.EntryPrice,
+                SuggestedStopLoss: aiDecision?.StopLoss,
+                SuggestedTakeProfit: aiDecision?.TakeProfit,
                 Reasoning: aiDecision?.Reasoning ?? new List<string>(),
                 Invalidations: aiDecision?.Invalidations ?? new List<string>()
             );
+
+            return new AiDecisionResult(finalDecision, prompt, responseJson, sw.ElapsedMilliseconds);
         }
         catch (JsonException ex)
         {
@@ -149,7 +169,8 @@ public class LlmDecisionEngine : IAiDecisionEngine
     {
         var sb = new StringBuilder();
         sb.AppendLine("Analyze the following market context and output ONLY a JSON object with this exact structure: ");
-        sb.AppendLine("{ \"decision\": \"BUY|SELL|WAIT\", \"confidence\": 0.0-1.0, \"reasoning\": [\"reason1\", \"reason2\"], \"invalidations\": [\"rule1\"] }");
+        sb.AppendLine("{ \"decision\": \"BUY|SELL|WAIT\", \"confidence\": 0.0-1.0, \"orderType\": \"MARKET|LIMIT|STOP\", \"entryPrice\": 2000.0, \"stopLoss\": 1990.0, \"takeProfit\": 2020.0, \"reasoning\": [\"reason1\"], \"invalidations\": [\"rule1\"] }");
+        sb.AppendLine("If decision is WAIT, you can set orderType, entryPrice, sl, tp to null.");
         sb.AppendLine();
         
         sb.AppendLine("--- MARKET CONTEXT ---");
@@ -190,6 +211,10 @@ public class LlmDecisionEngine : IAiDecisionEngine
     {
         public AiAction Decision { get; set; }
         public decimal Confidence { get; set; }
+        public OrderType? OrderType { get; set; }
+        public decimal? EntryPrice { get; set; }
+        public decimal? StopLoss { get; set; }
+        public decimal? TakeProfit { get; set; }
         public List<string>? Reasoning { get; set; }
         public List<string>? Invalidations { get; set; }
     }

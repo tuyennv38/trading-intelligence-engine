@@ -18,19 +18,22 @@ public class AiDecisionController : ControllerBase
     private readonly IMarketAnalyzer _analyzer;
     private readonly IStrategyEngine _strategyEngine;
     private readonly IAiDecisionEngine _aiEngine;
+    private readonly Services.IClickhouseLogger _clickhouseLogger;
 
     public AiDecisionController(
         IMarketAnalyzer analyzer,
         IStrategyEngine strategyEngine,
-        IAiDecisionEngine aiEngine)
+        IAiDecisionEngine aiEngine,
+        Services.IClickhouseLogger clickhouseLogger)
     {
         _analyzer = analyzer;
         _strategyEngine = strategyEngine;
         _aiEngine = aiEngine;
+        _clickhouseLogger = clickhouseLogger;
     }
 
     [HttpPost("decision")]
-    [ProducesResponseType(typeof(AiDecision), 200)]
+    [ProducesResponseType(typeof(AiDecisionResult), 200)]
     [ProducesResponseType(typeof(string), 400)]
     public async Task<IActionResult> GetAiDecision([FromBody] MarketAnalysisRequestDto requestDto, CancellationToken cancellationToken)
     {
@@ -61,9 +64,12 @@ public class AiDecisionController : ControllerBase
 
             // 3. Ask AI
             var context = new MarketDecisionContext(state, signals);
-            var decision = await _aiEngine.DecideAsync(context, cancellationToken);
+            var decisionResult = await _aiEngine.DecideAsync(context, cancellationToken);
 
-            return Ok(decision);
+            var sessionId = requestDto.SessionId ?? Guid.NewGuid();
+            await _clickhouseLogger.LogDecisionAsync(sessionId, requestDto.Symbol, requestDto.Timeframe, state, decisionResult);
+
+            return Ok(decisionResult);
         }
         catch (ArgumentException ex)
         {
@@ -72,6 +78,33 @@ public class AiDecisionController : ControllerBase
         catch (Exception ex)
         {
             return StatusCode(500, "Internal server error: " + ex.Message + "\n" + ex.StackTrace);
+        }
+    }
+
+    [HttpPost("feedback")]
+    [ProducesResponseType(200)]
+    [ProducesResponseType(typeof(string), 400)]
+    public async Task<IActionResult> LogFeedback([FromBody] AiFeedbackRequestDto feedbackDto)
+    {
+        if (feedbackDto == null || feedbackDto.SessionId == Guid.Empty)
+        {
+            return BadRequest("Invalid feedback request.");
+        }
+
+        try
+        {
+            await _clickhouseLogger.LogOutcomeAsync(
+                feedbackDto.SessionId,
+                feedbackDto.Outcome,
+                feedbackDto.PnlPips,
+                feedbackDto.ExitReason
+            );
+
+            return Ok(new { message = "Feedback logged successfully" });
+        }
+        catch (Exception ex)
+        {
+            return StatusCode(500, "Internal server error: " + ex.Message);
         }
     }
 }

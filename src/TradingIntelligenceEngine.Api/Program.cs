@@ -77,6 +77,8 @@ builder.Services.AddTransient<IBacktestEngine, BacktestEngine>();
 
 builder.Services.AddHttpClient<IAiDecisionEngine, LlmDecisionEngine>();
 
+builder.Services.AddSingleton<TradingIntelligenceEngine.Api.Services.IClickhouseLogger, TradingIntelligenceEngine.Api.Services.ClickhouseLogger>();
+
 var app = builder.Build();
 
 app.UseSwagger();
