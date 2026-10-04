@@ -15,6 +15,8 @@ using TradingIntelligenceEngine.Regime;
 using TradingIntelligenceEngine.Signal;
 using TradingIntelligenceEngine.Signal.Strategies;
 using TradingIntelligenceEngine.TechnicalAnalysis;
+using TradingIntelligenceEngine.Domain.Backtesting;
+using TradingIntelligenceEngine.Backtesting.Simulation;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -64,6 +66,8 @@ builder.Services.AddTransient<IMarketAnalyzer, MarketAnalyzerService>();
 
 builder.Services.AddTransient<ITradingStrategy, TrendFollowingPullbackStrategy>();
 builder.Services.AddTransient<IStrategyEngine, StrategyEngine>();
+
+builder.Services.AddTransient<IBacktestEngine, BacktestEngine>();
 
 var app = builder.Build();
 
