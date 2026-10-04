@@ -13,11 +13,15 @@ public class TechnicalAnalyzer : ITechnicalAnalyzer
     {
         var closes = candles.Select(c => c.Close).ToList();
 
-        decimal emaFast = IndicatorMath.CalculateEma(closes, options.EmaFast);
-        decimal emaSlow = IndicatorMath.CalculateEma(closes, options.EmaSlow);
-        decimal rsi = IndicatorMath.CalculateRsi(closes, options.RsiPeriod);
-        decimal atr = IndicatorMath.CalculateAtr(candles, options.AtrPeriod);
-        decimal adx = IndicatorMath.CalculateAdx(candles, options.AdxPeriod);
+        var lastCandle = candles.LastOrDefault();
+        
+        // If the client provided pre-calculated indicators on the last candle, use them directly
+        // This is highly recommended for production bots taking feeds from MT4/Binance to save CPU and ensure perfect sync.
+        decimal emaFast = lastCandle?.EmaFast ?? IndicatorMath.CalculateEma(closes, options.EmaFast);
+        decimal emaSlow = lastCandle?.EmaSlow ?? IndicatorMath.CalculateEma(closes, options.EmaSlow);
+        decimal rsi = lastCandle?.Rsi ?? IndicatorMath.CalculateRsi(closes, options.RsiPeriod);
+        decimal atr = lastCandle?.Atr ?? IndicatorMath.CalculateAtr(candles, options.AtrPeriod);
+        decimal adx = lastCandle?.Adx ?? IndicatorMath.CalculateAdx(candles, options.AdxPeriod);
         
         // ATR Percentile can be calculated historically. 
         // For V1, we return 0 or calculate a simple ratio if needed, but it's optional.

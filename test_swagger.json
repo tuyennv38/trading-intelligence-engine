@@ -1,0 +1,392 @@
+{
+  "openapi": "3.0.1",
+  "info": {
+    "title": "TradingIntelligenceEngine.Api",
+    "version": "v1"
+  },
+  "paths": {
+    "/api/v1/market-analysis/analyze": {
+      "post": {
+        "tags": [
+          "MarketAnalysis"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MarketAnalysisRequestDto"
+              }
+            },
+            "text/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MarketAnalysisRequestDto"
+              }
+            },
+            "application/*+json": {
+              "schema": {
+                "$ref": "#/components/schemas/MarketAnalysisRequestDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/MarketState"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MarketState"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MarketState"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "CandleDto": {
+        "type": "object",
+        "properties": {
+          "time": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "open": {
+            "type": "number",
+            "format": "double"
+          },
+          "high": {
+            "type": "number",
+            "format": "double"
+          },
+          "low": {
+            "type": "number",
+            "format": "double"
+          },
+          "close": {
+            "type": "number",
+            "format": "double"
+          },
+          "volume": {
+            "type": "number",
+            "format": "double"
+          }
+        },
+        "additionalProperties": false
+      },
+      "EventDirection": {
+        "enum": [
+          0,
+          1
+        ],
+        "type": "integer",
+        "format": "int32"
+      },
+      "LiquidityLevel": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "$ref": "#/components/schemas/LiquidityType"
+          },
+          "price": {
+            "type": "number",
+            "format": "double"
+          },
+          "sourceCandleIndices": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int32"
+            },
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "LiquidityState": {
+        "type": "object",
+        "properties": {
+          "activeLevels": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LiquidityLevel"
+            },
+            "nullable": true
+          },
+          "recentSweeps": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LiquiditySweep"
+            },
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "LiquiditySweep": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "$ref": "#/components/schemas/LiquidityType"
+          },
+          "sweepPrice": {
+            "type": "number",
+            "format": "double"
+          },
+          "levelPrice": {
+            "type": "number",
+            "format": "double"
+          },
+          "candleIndex": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "time": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "additionalProperties": false
+      },
+      "LiquidityType": {
+        "enum": [
+          0,
+          1
+        ],
+        "type": "integer",
+        "format": "int32"
+      },
+      "MarketAnalysisRequestDto": {
+        "type": "object",
+        "properties": {
+          "symbol": {
+            "type": "string",
+            "nullable": true
+          },
+          "timeframe": {
+            "type": "string",
+            "nullable": true
+          },
+          "candles": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CandleDto"
+            },
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "MarketRegimeType": {
+        "enum": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "type": "integer",
+        "format": "int32"
+      },
+      "MarketState": {
+        "type": "object",
+        "properties": {
+          "symbol": {
+            "type": "string",
+            "nullable": true
+          },
+          "timeframe": {
+            "$ref": "#/components/schemas/Timeframe"
+          },
+          "trend": {
+            "$ref": "#/components/schemas/TrendState"
+          },
+          "structure": {
+            "$ref": "#/components/schemas/StructureState"
+          },
+          "events": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/StructureEvent"
+            },
+            "nullable": true
+          },
+          "liquidity": {
+            "$ref": "#/components/schemas/LiquidityState"
+          },
+          "technical": {
+            "$ref": "#/components/schemas/TechnicalState"
+          },
+          "regime": {
+            "$ref": "#/components/schemas/RegimeState"
+          }
+        },
+        "additionalProperties": false
+      },
+      "RegimeState": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "$ref": "#/components/schemas/MarketRegimeType"
+          },
+          "confidence": {
+            "type": "number",
+            "format": "double"
+          }
+        },
+        "additionalProperties": false
+      },
+      "StructureEvent": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "$ref": "#/components/schemas/StructureEventType"
+          },
+          "direction": {
+            "$ref": "#/components/schemas/EventDirection"
+          },
+          "price": {
+            "type": "number",
+            "format": "double"
+          },
+          "candleIndex": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "confirmedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "status": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "StructureEventType": {
+        "enum": [
+          0,
+          1
+        ],
+        "type": "integer",
+        "format": "int32"
+      },
+      "StructureLabel": {
+        "enum": [
+          0,
+          1,
+          2,
+          3
+        ],
+        "type": "integer",
+        "format": "int32"
+      },
+      "StructureState": {
+        "type": "object",
+        "properties": {
+          "lastLabel": {
+            "$ref": "#/components/schemas/StructureLabel"
+          },
+          "sequence": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "TechnicalState": {
+        "type": "object",
+        "properties": {
+          "emaFast": {
+            "type": "number",
+            "format": "double"
+          },
+          "emaSlow": {
+            "type": "number",
+            "format": "double"
+          },
+          "rsi": {
+            "type": "number",
+            "format": "double"
+          },
+          "atr": {
+            "type": "number",
+            "format": "double"
+          },
+          "adx": {
+            "type": "number",
+            "format": "double"
+          },
+          "atrPercentile": {
+            "type": "number",
+            "format": "double"
+          }
+        },
+        "additionalProperties": false
+      },
+      "Timeframe": {
+        "enum": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6
+        ],
+        "type": "integer",
+        "format": "int32"
+      },
+      "TrendState": {
+        "type": "object",
+        "properties": {
+          "direction": {
+            "$ref": "#/components/schemas/EventDirection"
+          },
+          "strength": {
+            "type": "number",
+            "format": "double"
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  }
+}

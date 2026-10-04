@@ -39,7 +39,8 @@ public class SignalController : ControllerBase
         try
         {
             var domainCandles = requestDto.Candles.Select(c => new Candle(
-                c.Time, c.Open, c.High, c.Low, c.Close, c.Volume
+                c.Time, c.Open, c.High, c.Low, c.Close, c.Volume,
+                c.EmaFast, c.EmaSlow, c.Rsi, c.Adx, c.Atr
             )).ToList();
 
             var request = new MarketAnalysisRequest(requestDto.Symbol, timeframe, domainCandles);

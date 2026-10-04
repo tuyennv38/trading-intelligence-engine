@@ -9,7 +9,15 @@ public sealed record Candle
     public decimal Close { get; init; }
     public decimal Volume { get; init; }
 
-    public Candle(DateTimeOffset time, decimal open, decimal high, decimal low, decimal close, decimal volume)
+    // Optional pre-calculated indicators from broker/client
+    public decimal? EmaFast { get; init; }
+    public decimal? EmaSlow { get; init; }
+    public decimal? Rsi { get; init; }
+    public decimal? Adx { get; init; }
+    public decimal? Atr { get; init; }
+
+    public Candle(DateTimeOffset time, decimal open, decimal high, decimal low, decimal close, decimal volume, 
+        decimal? emaFast = null, decimal? emaSlow = null, decimal? rsi = null, decimal? adx = null, decimal? atr = null)
     {
         if (high < open || high < close || high < low)
         {
@@ -32,5 +40,11 @@ public sealed record Candle
         Low = low;
         Close = close;
         Volume = volume;
+        
+        EmaFast = emaFast;
+        EmaSlow = emaSlow;
+        Rsi = rsi;
+        Adx = adx;
+        Atr = atr;
     }
 }

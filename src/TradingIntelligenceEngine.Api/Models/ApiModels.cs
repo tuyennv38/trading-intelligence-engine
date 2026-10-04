@@ -10,7 +10,12 @@ public record CandleDto(
     decimal High,
     decimal Low,
     decimal Close,
-    decimal Volume
+    decimal Volume,
+    decimal? EmaFast = null,
+    decimal? EmaSlow = null,
+    decimal? Rsi = null,
+    decimal? Adx = null,
+    decimal? Atr = null
 );
 
 public record MarketAnalysisRequestDto(
