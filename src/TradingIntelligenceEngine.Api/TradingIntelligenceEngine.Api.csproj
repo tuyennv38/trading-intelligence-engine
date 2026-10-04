@@ -11,4 +11,13 @@
     <PackageReference Include="Swashbuckle.AspNetCore" Version="6.6.2" />
   </ItemGroup>
 
+  <ItemGroup>
+    <ProjectReference Include="..\TradingIntelligenceEngine.Application\TradingIntelligenceEngine.Application.csproj" />
+    <ProjectReference Include="..\TradingIntelligenceEngine.Domain\TradingIntelligenceEngine.Domain.csproj" />
+    <ProjectReference Include="..\TradingIntelligenceEngine.MarketStructure\TradingIntelligenceEngine.MarketStructure.csproj" />
+    <ProjectReference Include="..\TradingIntelligenceEngine.TechnicalAnalysis\TradingIntelligenceEngine.TechnicalAnalysis.csproj" />
+    <ProjectReference Include="..\TradingIntelligenceEngine.Liquidity\TradingIntelligenceEngine.Liquidity.csproj" />
+    <ProjectReference Include="..\TradingIntelligenceEngine.Regime\TradingIntelligenceEngine.Regime.csproj" />
+  </ItemGroup>
+
 </Project>

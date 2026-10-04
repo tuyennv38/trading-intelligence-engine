@@ -32,6 +32,6 @@ public interface IRegimeAnalyzer
     RegimeState Analyze(
         IReadOnlyList<StructureEvent> events,
         TechnicalState technical,
-        StructurePoint lastStructure,
+        StructurePoint? lastStructure,
         IndicatorOptions options);
 }

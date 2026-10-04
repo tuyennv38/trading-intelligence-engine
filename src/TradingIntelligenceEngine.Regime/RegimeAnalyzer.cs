@@ -11,7 +11,7 @@ public class RegimeAnalyzer : IRegimeAnalyzer
     public RegimeState Analyze(
         IReadOnlyList<StructureEvent> events, 
         TechnicalState technical, 
-        StructurePoint lastStructure, 
+        StructurePoint? lastStructure, 
         IndicatorOptions options)
     {
         // Default base confidence
