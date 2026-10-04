@@ -3,9 +3,12 @@ using System.Text.Json;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
-using Octonica.ClickHouseClient;
+using ClickHouse.Client.ADO;
+using ClickHouse.Client.ADO.Parameters;
+using ClickHouse.Client.Copy;
 using TradingIntelligenceEngine.Domain.AI;
 using TradingIntelligenceEngine.Domain.MarketState;
+using TradingIntelligenceEngine.Api.Data;
 
 namespace TradingIntelligenceEngine.Api.Services;
 
@@ -17,19 +20,15 @@ public interface IClickhouseLogger
 
 public class ClickhouseLogger : IClickhouseLogger
 {
-    private readonly string _connectionString;
+    private readonly IClickhouseContext _context;
     private readonly ILogger<ClickhouseLogger> _logger;
 
-    public ClickhouseLogger(IConfiguration configuration, ILogger<ClickhouseLogger> logger)
+    public ClickhouseLogger(IClickhouseContext context, ILogger<ClickhouseLogger> logger)
     {
+        _context = context;
         _logger = logger;
         
-        // Use Environment Variable first (matching cscmobi-gsm-dashboard pattern), fallback to appsettings
-        _connectionString = Environment.GetEnvironmentVariable("CLICKHOUSE_LOG_URI") 
-            ?? configuration.GetConnectionString("ClickHouse") 
-            ?? string.Empty;
-        
-        if (!string.IsNullOrEmpty(_connectionString))
+        if (!string.IsNullOrEmpty(_context.ConnectionString))
         {
             EnsureTablesCreatedAsync().ConfigureAwait(false);
         }
@@ -43,11 +42,7 @@ public class ClickhouseLogger : IClickhouseLogger
     {
         try
         {
-            var csBuilder = new ClickHouseConnectionStringBuilder(_connectionString);
-            csBuilder.CommandTimeout = 120; // 120 seconds timeout
-            csBuilder.ReadWriteTimeout = 120000;
-            
-            await using var connection = new ClickHouseConnection(csBuilder.ConnectionString);
+            await using var connection = _context.CreateConnection();
             await connection.OpenAsync();
 
             var createLogsTable = @"
@@ -80,10 +75,12 @@ public class ClickhouseLogger : IClickhouseLogger
                 ) ENGINE = MergeTree()
                 ORDER BY (created_at, session_id);";
 
-            await using var cmd1 = connection.CreateCommand(createLogsTable);
+            await using var cmd1 = connection.CreateCommand();
+            cmd1.CommandText = createLogsTable;
             await cmd1.ExecuteNonQueryAsync();
             
-            await using var cmd2 = connection.CreateCommand(createOutcomesTable);
+            await using var cmd2 = connection.CreateCommand();
+            cmd2.CommandText = createOutcomesTable;
             await cmd2.ExecuteNonQueryAsync();
         }
         catch (Exception ex)
@@ -94,15 +91,11 @@ public class ClickhouseLogger : IClickhouseLogger
 
     public async Task LogDecisionAsync(Guid sessionId, string symbol, string timeframe, MarketState state, AiDecisionResult result)
     {
-        if (string.IsNullOrEmpty(_connectionString)) return;
+        if (string.IsNullOrEmpty(_context.ConnectionString)) return;
 
         try
         {
-            var csBuilder = new ClickHouseConnectionStringBuilder(_connectionString);
-            csBuilder.CommandTimeout = 120; // Try larger command timeout
-            csBuilder.ReadWriteTimeout = 120000; // 120 seconds in milliseconds
-            
-            await using var connection = new ClickHouseConnection(csBuilder.ConnectionString);
+            await using var connection = _context.CreateConnection();
             await connection.OpenAsync();
 
             var query = @"
@@ -111,21 +104,22 @@ public class ClickhouseLogger : IClickhouseLogger
                 VALUES 
                 (@session_id, @symbol, @timeframe, @timestamp, @market_state_json, @system_prompt, @ai_response_raw, @decision, @confidence, @order_type, @entry_price, @sl, @tp, @latency_ms)";
 
-            await using var cmd = connection.CreateCommand(query);
-            cmd.Parameters.AddWithValue("session_id", sessionId);
-            cmd.Parameters.AddWithValue("symbol", symbol);
-            cmd.Parameters.AddWithValue("timeframe", timeframe);
-            cmd.Parameters.AddWithValue("timestamp", DateTime.UtcNow);
-            cmd.Parameters.AddWithValue("market_state_json", JsonSerializer.Serialize(state));
-            cmd.Parameters.AddWithValue("system_prompt", result.Prompt);
-            cmd.Parameters.AddWithValue("ai_response_raw", result.RawResponse);
-            cmd.Parameters.AddWithValue("decision", result.Decision.Decision.ToString());
-            cmd.Parameters.AddWithValue("confidence", (float)result.Decision.Confidence);
-            cmd.Parameters.AddWithValue("order_type", result.Decision.SuggestedType?.ToString() ?? string.Empty);
-            cmd.Parameters.AddWithValue("entry_price", (double)(result.Decision.SuggestedEntry ?? 0m));
-            cmd.Parameters.AddWithValue("sl", (double)(result.Decision.SuggestedStopLoss ?? 0m));
-            cmd.Parameters.AddWithValue("tp", (double)(result.Decision.SuggestedTakeProfit ?? 0m));
-            cmd.Parameters.AddWithValue("latency_ms", (int)result.LatencyMs);
+            await using var cmd = connection.CreateCommand();
+            cmd.CommandText = query;
+            cmd.Parameters.Add(new ClickHouseDbParameter { ParameterName = "session_id", Value = sessionId });
+            cmd.Parameters.Add(new ClickHouseDbParameter { ParameterName = "symbol", Value = symbol });
+            cmd.Parameters.Add(new ClickHouseDbParameter { ParameterName = "timeframe", Value = timeframe });
+            cmd.Parameters.Add(new ClickHouseDbParameter { ParameterName = "timestamp", Value = DateTime.UtcNow });
+            cmd.Parameters.Add(new ClickHouseDbParameter { ParameterName = "market_state_json", Value = JsonSerializer.Serialize(state) });
+            cmd.Parameters.Add(new ClickHouseDbParameter { ParameterName = "system_prompt", Value = result.Prompt });
+            cmd.Parameters.Add(new ClickHouseDbParameter { ParameterName = "ai_response_raw", Value = result.RawResponse });
+            cmd.Parameters.Add(new ClickHouseDbParameter { ParameterName = "decision", Value = result.Decision.Decision.ToString() });
+            cmd.Parameters.Add(new ClickHouseDbParameter { ParameterName = "confidence", Value = (float)result.Decision.Confidence });
+            cmd.Parameters.Add(new ClickHouseDbParameter { ParameterName = "order_type", Value = result.Decision.SuggestedType?.ToString() ?? string.Empty });
+            cmd.Parameters.Add(new ClickHouseDbParameter { ParameterName = "entry_price", Value = (double)(result.Decision.SuggestedEntry ?? 0m) });
+            cmd.Parameters.Add(new ClickHouseDbParameter { ParameterName = "sl", Value = (double)(result.Decision.SuggestedStopLoss ?? 0m) });
+            cmd.Parameters.Add(new ClickHouseDbParameter { ParameterName = "tp", Value = (double)(result.Decision.SuggestedTakeProfit ?? 0m) });
+            cmd.Parameters.Add(new ClickHouseDbParameter { ParameterName = "latency_ms", Value = (int)result.LatencyMs });
 
             await cmd.ExecuteNonQueryAsync();
         }
@@ -137,15 +131,11 @@ public class ClickhouseLogger : IClickhouseLogger
 
     public async Task LogOutcomeAsync(Guid sessionId, string outcome, decimal pnlPips, string exitReason)
     {
-        if (string.IsNullOrEmpty(_connectionString)) return;
+        if (string.IsNullOrEmpty(_context.ConnectionString)) return;
 
         try
         {
-            var csBuilder = new ClickHouseConnectionStringBuilder(_connectionString);
-            csBuilder.CommandTimeout = 120;
-            csBuilder.ReadWriteTimeout = 120000;
-            
-            await using var connection = new ClickHouseConnection(csBuilder.ConnectionString);
+            await using var connection = _context.CreateConnection();
             await connection.OpenAsync();
 
             var query = @"
@@ -154,11 +144,12 @@ public class ClickhouseLogger : IClickhouseLogger
                 VALUES 
                 (@session_id, @outcome, @pnl_pips, @exit_reason)";
 
-            await using var cmd = connection.CreateCommand(query);
-            cmd.Parameters.AddWithValue("session_id", sessionId);
-            cmd.Parameters.AddWithValue("outcome", outcome);
-            cmd.Parameters.AddWithValue("pnl_pips", (double)pnlPips);
-            cmd.Parameters.AddWithValue("exit_reason", exitReason);
+            await using var cmd = connection.CreateCommand();
+            cmd.CommandText = query;
+            cmd.Parameters.Add(new ClickHouseDbParameter { ParameterName = "session_id", Value = sessionId });
+            cmd.Parameters.Add(new ClickHouseDbParameter { ParameterName = "outcome", Value = outcome });
+            cmd.Parameters.Add(new ClickHouseDbParameter { ParameterName = "pnl_pips", Value = (double)pnlPips });
+            cmd.Parameters.Add(new ClickHouseDbParameter { ParameterName = "exit_reason", Value = exitReason });
 
             await cmd.ExecuteNonQueryAsync();
         }
