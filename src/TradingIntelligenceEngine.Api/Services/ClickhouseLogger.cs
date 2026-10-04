@@ -23,7 +23,11 @@ public class ClickhouseLogger : IClickhouseLogger
     public ClickhouseLogger(IConfiguration configuration, ILogger<ClickhouseLogger> logger)
     {
         _logger = logger;
-        _connectionString = configuration.GetConnectionString("ClickHouse") ?? string.Empty;
+        
+        // Use Environment Variable first (matching cscmobi-gsm-dashboard pattern), fallback to appsettings
+        _connectionString = Environment.GetEnvironmentVariable("CLICKHOUSE_LOG_URI") 
+            ?? configuration.GetConnectionString("ClickHouse") 
+            ?? string.Empty;
         
         if (!string.IsNullOrEmpty(_connectionString))
         {
@@ -40,7 +44,8 @@ public class ClickhouseLogger : IClickhouseLogger
         try
         {
             var csBuilder = new ClickHouseConnectionStringBuilder(_connectionString);
-            csBuilder.CommandTimeout = 30; // 30 seconds timeout
+            csBuilder.CommandTimeout = 120; // 120 seconds timeout
+            csBuilder.ReadWriteTimeout = 120000;
             
             await using var connection = new ClickHouseConnection(csBuilder.ConnectionString);
             await connection.OpenAsync();
@@ -94,7 +99,8 @@ public class ClickhouseLogger : IClickhouseLogger
         try
         {
             var csBuilder = new ClickHouseConnectionStringBuilder(_connectionString);
-            csBuilder.CommandTimeout = 30; // Increase timeout to 30 seconds
+            csBuilder.CommandTimeout = 120; // Try larger command timeout
+            csBuilder.ReadWriteTimeout = 120000; // 120 seconds in milliseconds
             
             await using var connection = new ClickHouseConnection(csBuilder.ConnectionString);
             await connection.OpenAsync();
@@ -136,7 +142,8 @@ public class ClickhouseLogger : IClickhouseLogger
         try
         {
             var csBuilder = new ClickHouseConnectionStringBuilder(_connectionString);
-            csBuilder.CommandTimeout = 30;
+            csBuilder.CommandTimeout = 120;
+            csBuilder.ReadWriteTimeout = 120000;
             
             await using var connection = new ClickHouseConnection(csBuilder.ConnectionString);
             await connection.OpenAsync();
