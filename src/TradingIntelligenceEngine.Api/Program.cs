@@ -81,6 +81,12 @@ builder.Services.AddSingleton<TradingIntelligenceEngine.Api.Services.IClickhouse
 
 var app = builder.Build();
 
+// Kích hoạt IClickhouseLogger ngay khi khởi động app để tạo bảng lập tức
+using (var scope = app.Services.CreateScope())
+{
+    var clickhouseLogger = scope.ServiceProvider.GetRequiredService<TradingIntelligenceEngine.Api.Services.IClickhouseLogger>();
+}
+
 app.UseSwagger();
 app.UseSwaggerUI(c =>
 {
