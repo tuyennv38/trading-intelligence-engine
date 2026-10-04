@@ -40,7 +40,7 @@ public class ClickhouseLogger : IClickhouseLogger
         try
         {
             var csBuilder = new ClickHouseConnectionStringBuilder(_connectionString);
-            csBuilder.Timeout = 30000;
+            csBuilder.CommandTimeout = 30; // 30 seconds timeout
             
             await using var connection = new ClickHouseConnection(csBuilder.ConnectionString);
             await connection.OpenAsync();
@@ -94,7 +94,7 @@ public class ClickhouseLogger : IClickhouseLogger
         try
         {
             var csBuilder = new ClickHouseConnectionStringBuilder(_connectionString);
-            csBuilder.Timeout = 30000; // Increase timeout to 30 seconds
+            csBuilder.CommandTimeout = 30; // Increase timeout to 30 seconds
             
             await using var connection = new ClickHouseConnection(csBuilder.ConnectionString);
             await connection.OpenAsync();
@@ -136,7 +136,7 @@ public class ClickhouseLogger : IClickhouseLogger
         try
         {
             var csBuilder = new ClickHouseConnectionStringBuilder(_connectionString);
-            csBuilder.Timeout = 30000;
+            csBuilder.CommandTimeout = 30;
             
             await using var connection = new ClickHouseConnection(csBuilder.ConnectionString);
             await connection.OpenAsync();
