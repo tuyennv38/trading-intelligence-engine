@@ -40,6 +40,7 @@ public class LlmDecisionEngine : IAiDecisionEngine
                 new { role = "user", content = prompt }
             },
             temperature = 0.2, // Low temperature for consistent deterministic responses
+            stream = false, // Force non-streaming for standard JSON payload
             response_format = new { type = "json_object" }
         };
 
@@ -60,28 +61,88 @@ public class LlmDecisionEngine : IAiDecisionEngine
 
         var responseJson = await response.Content.ReadAsStringAsync(cancellationToken);
         
-        // Parse OpenAI format response
-        using var document = JsonDocument.Parse(responseJson);
-        var messageContent = document.RootElement
-            .GetProperty("choices")[0]
-            .GetProperty("message")
-            .GetProperty("content")
-            .GetString();
+        try
+        {
+            string? messageContent = null;
 
-        var aiDecision = string.IsNullOrWhiteSpace(messageContent) 
-            ? null 
-            : JsonSerializer.Deserialize<AiDecisionDto>(messageContent, new JsonSerializerOptions
+            if (responseJson.TrimStart().StartsWith("data:"))
+            {
+                // Parse SSE format (Server-Sent Events) which the proxy might force
+                var sb = new StringBuilder();
+                var lines = responseJson.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+                foreach (var line in lines)
+                {
+                    if (line.StartsWith("data: ") && !line.Contains("[DONE]"))
+                    {
+                        var jsonPayload = line.Substring(6).Trim();
+                        if (jsonPayload.StartsWith("{"))
+                        {
+                            using var chunkDoc = JsonDocument.Parse(jsonPayload);
+                            if (chunkDoc.RootElement.TryGetProperty("choices", out var choices) && choices.GetArrayLength() > 0)
+                            {
+                                if (choices[0].TryGetProperty("delta", out var delta))
+                                {
+                                    if (delta.TryGetProperty("content", out var contentElement))
+                                    {
+                                        sb.Append(contentElement.GetString());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                messageContent = sb.ToString();
+            }
+            else
+            {
+                // Parse standard OpenAI format response
+                using var document = JsonDocument.Parse(responseJson);
+                messageContent = document.RootElement
+                    .GetProperty("choices")[0]
+                    .GetProperty("message")
+                    .GetProperty("content")
+                    .GetString();
+            }
+
+            if (string.IsNullOrWhiteSpace(messageContent))
+        {
+            return new AiDecision(AiAction.WAIT, 0, new List<string> { "Empty AI response" }, new List<string>());
+        }
+
+        // Clean up potential markdown formatting (```json ... ```)
+        messageContent = messageContent.Trim();
+        if (messageContent.StartsWith("```json"))
+            messageContent = messageContent.Substring(7);
+        if (messageContent.StartsWith("```"))
+            messageContent = messageContent.Substring(3);
+        if (messageContent.EndsWith("```"))
+            messageContent = messageContent.Substring(0, messageContent.Length - 3);
+
+        messageContent = messageContent.Trim();
+        
+        // If it doesn't start with '{', it's not valid JSON. Let's return raw string as reasoning
+        if (!messageContent.StartsWith("{"))
+        {
+            return new AiDecision(AiAction.WAIT, 0, new List<string> { "AI returned non-JSON:", messageContent }, new List<string>());
+        }
+
+            var aiDecision = JsonSerializer.Deserialize<AiDecisionDto>(messageContent, new JsonSerializerOptions
             {
                 PropertyNameCaseInsensitive = true,
                 Converters = { new System.Text.Json.Serialization.JsonStringEnumConverter() }
             });
 
-        return new AiDecision(
-            Decision: aiDecision?.Decision ?? AiAction.WAIT,
-            Confidence: aiDecision?.Confidence ?? 0,
-            Reasoning: aiDecision?.Reasoning ?? new List<string>(),
-            Invalidations: aiDecision?.Invalidations ?? new List<string>()
-        );
+            return new AiDecision(
+                Decision: aiDecision?.Decision ?? AiAction.WAIT,
+                Confidence: aiDecision?.Confidence ?? 0,
+                Reasoning: aiDecision?.Reasoning ?? new List<string>(),
+                Invalidations: aiDecision?.Invalidations ?? new List<string>()
+            );
+        }
+        catch (JsonException ex)
+        {
+            throw new Exception($"Failed to parse JSON response. Raw response: {responseJson}. Error: {ex.Message}");
+        }
     }
 
     private string BuildPrompt(MarketDecisionContext context)
