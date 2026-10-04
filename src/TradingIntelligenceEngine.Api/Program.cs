@@ -6,11 +6,14 @@ using TradingIntelligenceEngine.Domain.Configuration;
 using TradingIntelligenceEngine.Domain.MarketContext;
 using TradingIntelligenceEngine.Domain.MarketState;
 using TradingIntelligenceEngine.Domain.MarketStructure;
+using TradingIntelligenceEngine.Domain.Signal;
 using TradingIntelligenceEngine.Liquidity;
 using TradingIntelligenceEngine.MarketStructure.Events;
 using TradingIntelligenceEngine.MarketStructure.Structure;
 using TradingIntelligenceEngine.MarketStructure.Swings;
 using TradingIntelligenceEngine.Regime;
+using TradingIntelligenceEngine.Signal;
+using TradingIntelligenceEngine.Signal.Strategies;
 using TradingIntelligenceEngine.TechnicalAnalysis;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -58,6 +61,9 @@ builder.Services.AddTransient<ISupportResistanceAnalyzer, SupportResistanceAnaly
 builder.Services.AddTransient<IRegimeAnalyzer, RegimeAnalyzer>();
 
 builder.Services.AddTransient<IMarketAnalyzer, MarketAnalyzerService>();
+
+builder.Services.AddTransient<ITradingStrategy, TrendFollowingPullbackStrategy>();
+builder.Services.AddTransient<IStrategyEngine, StrategyEngine>();
 
 var app = builder.Build();
 

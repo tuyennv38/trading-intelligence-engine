@@ -19,6 +19,7 @@ public sealed class MarketState
 {
     public string Symbol { get; init; } = string.Empty;
     public Timeframe Timeframe { get; init; }
+    public decimal CurrentPrice { get; init; }
     
     // We combine parts from Regime, Tech, and Structure to formulate TrendState and StructureState
     public TrendState? Trend { get; init; }

@@ -18,6 +18,7 @@
     <ProjectReference Include="..\TradingIntelligenceEngine.TechnicalAnalysis\TradingIntelligenceEngine.TechnicalAnalysis.csproj" />
     <ProjectReference Include="..\TradingIntelligenceEngine.Liquidity\TradingIntelligenceEngine.Liquidity.csproj" />
     <ProjectReference Include="..\TradingIntelligenceEngine.Regime\TradingIntelligenceEngine.Regime.csproj" />
+    <ProjectReference Include="..\TradingIntelligenceEngine.Signal\TradingIntelligenceEngine.Signal.csproj" />
   </ItemGroup>
 
 </Project>

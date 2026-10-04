@@ -95,6 +95,7 @@ public class MarketAnalyzerService : IMarketAnalyzer
         {
             Symbol = request.Symbol,
             Timeframe = request.Timeframe,
+            CurrentPrice = request.Candles.Last().Close,
             Trend = trendState,
             Structure = structureState,
             Events = events,
