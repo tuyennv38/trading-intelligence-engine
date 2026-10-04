@@ -67,7 +67,8 @@ public class AiDecisionController : ControllerBase
             var decisionResult = await _aiEngine.DecideAsync(context, cancellationToken);
 
             var sessionId = requestDto.SessionId ?? Guid.NewGuid();
-            await _clickhouseLogger.LogDecisionAsync(sessionId, requestDto.Symbol, requestDto.Timeframe, state, decisionResult);
+            var requestJson = System.Text.Json.JsonSerializer.Serialize(requestDto);
+            await _clickhouseLogger.LogDecisionAsync(sessionId, requestDto.Symbol, requestDto.Timeframe, requestJson, state, decisionResult);
 
             return Ok(decisionResult);
         }

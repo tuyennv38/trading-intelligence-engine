@@ -14,7 +14,7 @@ namespace TradingIntelligenceEngine.Api.Services;
 
 public interface IClickhouseLogger
 {
-    Task LogDecisionAsync(Guid sessionId, string symbol, string timeframe, MarketState state, AiDecisionResult result);
+    Task LogDecisionAsync(Guid sessionId, string symbol, string timeframe, string requestJson, MarketState state, AiDecisionResult result);
     Task LogOutcomeAsync(Guid sessionId, string outcome, decimal pnlPips, string exitReason);
 }
 
@@ -51,6 +51,7 @@ public class ClickhouseLogger : IClickhouseLogger
                     symbol String,
                     timeframe String,
                     timestamp DateTime,
+                    request_json String,
                     market_state_json String,
                     system_prompt String,
                     ai_response_raw String,
@@ -79,6 +80,12 @@ public class ClickhouseLogger : IClickhouseLogger
             cmd1.CommandText = createLogsTable;
             await cmd1.ExecuteNonQueryAsync();
             
+            // Add column request_json if not exists
+            var alterLogsTable = "ALTER TABLE ai_decision_logs ADD COLUMN IF NOT EXISTS request_json String;";
+            await using var cmdAlter = connection.CreateCommand();
+            cmdAlter.CommandText = alterLogsTable;
+            await cmdAlter.ExecuteNonQueryAsync();
+            
             await using var cmd2 = connection.CreateCommand();
             cmd2.CommandText = createOutcomesTable;
             await cmd2.ExecuteNonQueryAsync();
@@ -89,7 +96,7 @@ public class ClickhouseLogger : IClickhouseLogger
         }
     }
 
-    public async Task LogDecisionAsync(Guid sessionId, string symbol, string timeframe, MarketState state, AiDecisionResult result)
+    public async Task LogDecisionAsync(Guid sessionId, string symbol, string timeframe, string requestJson, MarketState state, AiDecisionResult result)
     {
         if (string.IsNullOrEmpty(_context.ConnectionString)) return;
 
@@ -98,19 +105,20 @@ public class ClickhouseLogger : IClickhouseLogger
             await using var connection = _context.CreateConnection();
             await connection.OpenAsync();
 
-            var query = @"
-                INSERT INTO ai_decision_logs 
-                (session_id, symbol, timeframe, timestamp, market_state_json, system_prompt, ai_response_raw, decision, confidence, order_type, entry_price, sl, tp, latency_ms)
-                VALUES 
-                (@session_id, @symbol, @timeframe, @timestamp, @market_state_json, @system_prompt, @ai_response_raw, @decision, @confidence, @order_type, @entry_price, @sl, @tp, @latency_ms)";
+        var query = @"
+            INSERT INTO ai_decision_logs 
+            (session_id, symbol, timeframe, timestamp, request_json, market_state_json, system_prompt, ai_response_raw, decision, confidence, order_type, entry_price, sl, tp, latency_ms)
+            VALUES 
+            (@session_id, @symbol, @timeframe, @timestamp, @request_json, @market_state_json, @system_prompt, @ai_response_raw, @decision, @confidence, @order_type, @entry_price, @sl, @tp, @latency_ms)";
 
-            await using var cmd = connection.CreateCommand();
-            cmd.CommandText = query;
-            cmd.Parameters.Add(new ClickHouseDbParameter { ParameterName = "session_id", Value = sessionId });
-            cmd.Parameters.Add(new ClickHouseDbParameter { ParameterName = "symbol", Value = symbol });
-            cmd.Parameters.Add(new ClickHouseDbParameter { ParameterName = "timeframe", Value = timeframe });
-            cmd.Parameters.Add(new ClickHouseDbParameter { ParameterName = "timestamp", Value = DateTime.UtcNow });
-            cmd.Parameters.Add(new ClickHouseDbParameter { ParameterName = "market_state_json", Value = JsonSerializer.Serialize(state) });
+        await using var cmd = connection.CreateCommand();
+        cmd.CommandText = query;
+        cmd.Parameters.Add(new ClickHouseDbParameter { ParameterName = "session_id", Value = sessionId });
+        cmd.Parameters.Add(new ClickHouseDbParameter { ParameterName = "symbol", Value = symbol });
+        cmd.Parameters.Add(new ClickHouseDbParameter { ParameterName = "timeframe", Value = timeframe });
+        cmd.Parameters.Add(new ClickHouseDbParameter { ParameterName = "timestamp", Value = DateTime.UtcNow });
+        cmd.Parameters.Add(new ClickHouseDbParameter { ParameterName = "request_json", Value = requestJson });
+        cmd.Parameters.Add(new ClickHouseDbParameter { ParameterName = "market_state_json", Value = JsonSerializer.Serialize(state) });
             cmd.Parameters.Add(new ClickHouseDbParameter { ParameterName = "system_prompt", Value = result.Prompt });
             cmd.Parameters.Add(new ClickHouseDbParameter { ParameterName = "ai_response_raw", Value = result.RawResponse });
             cmd.Parameters.Add(new ClickHouseDbParameter { ParameterName = "decision", Value = result.Decision.Decision.ToString() });
