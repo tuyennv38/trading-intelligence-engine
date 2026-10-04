@@ -19,6 +19,8 @@ public class MarketAnalysisController : ControllerBase
     }
 
     [HttpPost("analyze")]
+    [ProducesResponseType(typeof(MarketState), 200)]
+    [ProducesResponseType(typeof(string), 400)]
     public IActionResult Analyze([FromBody] MarketAnalysisRequestDto requestDto)
     {
         if (requestDto == null || string.IsNullOrWhiteSpace(requestDto.Symbol) || requestDto.Candles == null)
