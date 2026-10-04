@@ -17,6 +17,8 @@ using TradingIntelligenceEngine.Signal.Strategies;
 using TradingIntelligenceEngine.TechnicalAnalysis;
 using TradingIntelligenceEngine.Domain.Backtesting;
 using TradingIntelligenceEngine.Backtesting.Simulation;
+using TradingIntelligenceEngine.AI.Providers;
+using TradingIntelligenceEngine.Domain.AI;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -53,6 +55,10 @@ var indicatorOptions = new IndicatorOptions();
 builder.Configuration.GetSection("Indicators").Bind(indicatorOptions);
 builder.Services.AddSingleton(indicatorOptions);
 
+var aiProviderOptions = new AiProviderOptions();
+builder.Configuration.GetSection("AiProvider").Bind(aiProviderOptions);
+builder.Services.AddSingleton(aiProviderOptions);
+
 // 2. Register domain & application services
 builder.Services.AddTransient<ISwingDetector, SwingDetector>();
 builder.Services.AddTransient<IStructureAnalyzer, StructureAnalyzer>();
@@ -68,6 +74,8 @@ builder.Services.AddTransient<ITradingStrategy, TrendFollowingPullbackStrategy>(
 builder.Services.AddTransient<IStrategyEngine, StrategyEngine>();
 
 builder.Services.AddTransient<IBacktestEngine, BacktestEngine>();
+
+builder.Services.AddHttpClient<IAiDecisionEngine, LlmDecisionEngine>();
 
 var app = builder.Build();
 

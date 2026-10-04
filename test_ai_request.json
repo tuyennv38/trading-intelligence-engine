@@ -1,0 +1,19 @@
+{
+  "symbol": "XAUUSD",
+  "timeframe": "M5",
+  "candles": [
+    {"time": "2026-10-04T08:00:00Z", "open": 2000, "high": 2002, "low": 1998, "close": 2001, "volume": 100},
+    {"time": "2026-10-04T08:05:00Z", "open": 2001, "high": 2005, "low": 2000, "close": 2004, "volume": 120},
+    {"time": "2026-10-04T08:10:00Z", "open": 2004, "high": 2006, "low": 2002, "close": 2005, "volume": 110},
+    {"time": "2026-10-04T08:15:00Z", "open": 2005, "high": 2008, "low": 2004, "close": 2007, "volume": 130},
+    {"time": "2026-10-04T08:20:00Z", "open": 2007, "high": 2012, "low": 2006, "close": 2010, "volume": 150},
+    {"time": "2026-10-04T08:25:00Z", "open": 2010, "high": 2015, "low": 2009, "close": 2014, "volume": 140},
+    {"time": "2026-10-04T08:30:00Z", "open": 2014, "high": 2018, "low": 2013, "close": 2017, "volume": 160},
+    {"time": "2026-10-04T08:35:00Z", "open": 2017, "high": 2020, "low": 2016, "close": 2019, "volume": 170},
+    {"time": "2026-10-04T08:40:00Z", "open": 2019, "high": 2022, "low": 2018, "close": 2020, "volume": 180},
+    {"time": "2026-10-04T08:45:00Z", "open": 2020, "high": 2025, "low": 2019, "close": 2024, "volume": 200},
+    {"time": "2026-10-04T08:50:00Z", "open": 2024, "high": 2024, "low": 2020, "close": 2021, "volume": 100},
+    {"time": "2026-10-04T08:55:00Z", "open": 2021, "high": 2022, "low": 2018, "close": 2019, "volume": 110},
+    {"time": "2026-10-04T09:00:00Z", "open": 2019, "high": 2020, "low": 2015, "close": 2016, "volume": 120}
+  ]
+}
