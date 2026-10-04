@@ -18,6 +18,7 @@ var builder = WebApplication.CreateBuilder(args);
 // Add services to the container.
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
+builder.Services.AddSwaggerGen();
 
 // 1. Configuration bindings
 var swingOptions = new SwingOptions();
@@ -48,6 +49,9 @@ builder.Services.AddTransient<IRegimeAnalyzer, RegimeAnalyzer>();
 builder.Services.AddTransient<IMarketAnalyzer, MarketAnalyzerService>();
 
 var app = builder.Build();
+
+app.UseSwagger();
+app.UseSwaggerUI();
 
 app.UseAuthorization();
 app.MapControllers();
