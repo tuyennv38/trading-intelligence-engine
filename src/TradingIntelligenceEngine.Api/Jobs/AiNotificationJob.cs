@@ -49,47 +49,96 @@ public class AiNotificationJob : IAiNotificationJob
             planMsgBuilder.AppendLine($"*BIAS:* {tradingPlan.Bias}");
             planMsgBuilder.AppendLine($"*CONTEXT:* {tradingPlan.MarketContext}\n");
 
-                if (tradingPlan.SellScenarios != null && tradingPlan.SellScenarios.Any())
+            if (tradingPlan.SellScenarios != null && tradingPlan.SellScenarios.Any())
+            {
+                planMsgBuilder.AppendLine("🔴 *KỊCH BẢN BÁN (SELL)*");
+                foreach (var s in tradingPlan.SellScenarios)
                 {
-                    planMsgBuilder.AppendLine("🔴 *KỊCH BẢN BÁN (SELL)*");
-                    foreach (var s in tradingPlan.SellScenarios)
-                    {
-                        string tpString = s.TakeProfits != null && s.TakeProfits.Any() ? string.Join(" / ", s.TakeProfits) : "N/A";
-                        planMsgBuilder.AppendLine($"• {s.ZoneName}:");
-                        planMsgBuilder.AppendLine($"  - Vùng giá: {s.EntryBottom} - {s.EntryTop}");
-                        planMsgBuilder.AppendLine($"  - Stop Loss: {s.StopLoss} (R:R ~ {s.RiskRewardRatio})");
-                        planMsgBuilder.AppendLine($"  - Take Profit: {tpString}");
-                        planMsgBuilder.AppendLine($"  - Logic: {s.Logic}");
+                    planMsgBuilder.AppendLine($"• {s.ZoneName}:");
+                    planMsgBuilder.AppendLine($"  🔴 Entry : {s.EntryBottom:0.00} - {s.EntryTop:0.00}");
+                    
+                    // Tính toán khoảng cách (pts) và R:R cho Stop Loss
+                        decimal avgEntry = (s.EntryBottom + s.EntryTop) / 2;
+                        decimal slPts = Math.Abs(avgEntry - s.StopLoss);
+                        planMsgBuilder.AppendLine($"  🛡  SL    : {s.StopLoss:0.00} (-{slPts:0.00} pts)");
+
+                        // Xử lý hiển thị từng mức Take Profit
+                        if (s.TakeProfits != null && s.TakeProfits.Any())
+                        {
+                            for (int i = 0; i < s.TakeProfits.Count; i++)
+                            {
+                                decimal tpValue = s.TakeProfits[i];
+                                decimal tpPts = Math.Abs(tpValue - avgEntry);
+                                decimal rr = slPts > 0 ? tpPts / slPts : 0;
+                                planMsgBuilder.AppendLine($"  🎯 TP{i + 1}   : {tpValue:0.00} (+{tpPts:0.00} pts) R:R 1:{rr:0.0}");
+                            }
+                        }
+                        else
+                        {
+                            planMsgBuilder.AppendLine($"  🎯 TP    : N/A");
+                        }
+                        
+                        planMsgBuilder.AppendLine($"  💡 Logic : {s.Logic}");
                     }
                     planMsgBuilder.AppendLine();
                 }
 
-                if (tradingPlan.BuyScenarios != null && tradingPlan.BuyScenarios.Any())
+            if (tradingPlan.BuyScenarios != null && tradingPlan.BuyScenarios.Any())
+            {
+                planMsgBuilder.AppendLine("🟢 *KỊCH BẢN MUA (BUY)*");
+                foreach (var b in tradingPlan.BuyScenarios)
                 {
-                    planMsgBuilder.AppendLine("🟢 *KỊCH BẢN MUA (BUY)*");
-                    foreach (var b in tradingPlan.BuyScenarios)
-                    {
-                        string tpString = b.TakeProfits != null && b.TakeProfits.Any() ? string.Join(" / ", b.TakeProfits) : "N/A";
-                        planMsgBuilder.AppendLine($"• {b.ZoneName}:");
-                        planMsgBuilder.AppendLine($"  - Vùng giá: {b.EntryBottom} - {b.EntryTop}");
-                        planMsgBuilder.AppendLine($"  - Stop Loss: {b.StopLoss} (R:R ~ {b.RiskRewardRatio})");
-                        planMsgBuilder.AppendLine($"  - Take Profit: {tpString}");
-                        planMsgBuilder.AppendLine($"  - Logic: {b.Logic}");
+                    planMsgBuilder.AppendLine($"• {b.ZoneName}:");
+                    planMsgBuilder.AppendLine($"  🟢 Entry : {b.EntryBottom:0.00} - {b.EntryTop:0.00}");
+                    
+                    decimal avgEntry = (b.EntryBottom + b.EntryTop) / 2;
+                        decimal slPts = Math.Abs(avgEntry - b.StopLoss);
+                        planMsgBuilder.AppendLine($"  🛡  SL    : {b.StopLoss:0.00} (-{slPts:0.00} pts)");
+
+                        if (b.TakeProfits != null && b.TakeProfits.Any())
+                        {
+                            for (int i = 0; i < b.TakeProfits.Count; i++)
+                            {
+                                decimal tpValue = b.TakeProfits[i];
+                                decimal tpPts = Math.Abs(tpValue - avgEntry);
+                                decimal rr = slPts > 0 ? tpPts / slPts : 0;
+                                planMsgBuilder.AppendLine($"  🎯 TP{i + 1}   : {tpValue:0.00} (+{tpPts:0.00} pts) R:R 1:{rr:0.0}");
+                            }
+                        }
+                        else
+                        {
+                            planMsgBuilder.AppendLine($"  🎯 TP    : N/A");
+                        }
+                        
+                        planMsgBuilder.AppendLine($"  💡 Logic : {b.Logic}");
                     }
                     planMsgBuilder.AppendLine();
                 }
 
-                if (tradingPlan.BreakoutScenarios != null && tradingPlan.BreakoutScenarios.Any())
+            if (tradingPlan.BreakoutScenarios != null && tradingPlan.BreakoutScenarios.Any())
+            {
+                planMsgBuilder.AppendLine("⚡️ *CẢNH BÁO BREAKOUT*");
+                foreach (var br in tradingPlan.BreakoutScenarios)
                 {
-                    planMsgBuilder.AppendLine("⚡️ *CẢNH BÁO BREAKOUT*");
-                    foreach (var br in tradingPlan.BreakoutScenarios)
-                    {
-                        string tpString = br.TakeProfits != null && br.TakeProfits.Any() ? string.Join(" / ", br.TakeProfits) : "N/A";
-                        planMsgBuilder.AppendLine($"• {br.Type}:");
-                        planMsgBuilder.AppendLine($"  - Điều kiện: {br.Condition}");
-                        planMsgBuilder.AppendLine($"  - Kích hoạt tại: {br.TriggerPrice}");
-                        planMsgBuilder.AppendLine($"  - Stop Loss: {br.StopLoss}");
-                        planMsgBuilder.AppendLine($"  - Take Profit: {tpString}");
+                    string brIcon = br.Type.Contains("BUY", StringComparison.OrdinalIgnoreCase) ? "🟢" : "🔴";
+                    planMsgBuilder.AppendLine($"• {br.Type}:");
+                    planMsgBuilder.AppendLine($"  {brIcon} Kích hoạt : {br.TriggerPrice:0.00}");
+                    
+                    decimal slPts = Math.Abs(br.TriggerPrice - br.StopLoss);
+                        planMsgBuilder.AppendLine($"  🛡  SL        : {br.StopLoss:0.00} (-{slPts:0.00} pts)");
+
+                        if (br.TakeProfits != null && br.TakeProfits.Any())
+                        {
+                            for (int i = 0; i < br.TakeProfits.Count; i++)
+                            {
+                                decimal tpValue = br.TakeProfits[i];
+                                decimal tpPts = Math.Abs(tpValue - br.TriggerPrice);
+                                decimal rr = slPts > 0 ? tpPts / slPts : 0;
+                                planMsgBuilder.AppendLine($"  🎯 TP{i + 1}       : {tpValue:0.00} (+{tpPts:0.00} pts) R:R 1:{rr:0.0}");
+                            }
+                        }
+                        
+                        planMsgBuilder.AppendLine($"  💡 Điều kiện : {br.Condition}");
                     }
                 }
 
