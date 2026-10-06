@@ -49,43 +49,49 @@ public class AiNotificationJob : IAiNotificationJob
             planMsgBuilder.AppendLine($"*BIAS:* {tradingPlan.Bias}");
             planMsgBuilder.AppendLine($"*CONTEXT:* {tradingPlan.MarketContext}\n");
 
-            if (tradingPlan.SellScenarios != null && tradingPlan.SellScenarios.Any())
-            {
-                planMsgBuilder.AppendLine("🔴 *KỊCH BẢN BÁN (SELL)*");
-                foreach (var s in tradingPlan.SellScenarios)
+                if (tradingPlan.SellScenarios != null && tradingPlan.SellScenarios.Any())
                 {
-                    planMsgBuilder.AppendLine($"• {s.ZoneName}:");
-                    planMsgBuilder.AppendLine($"  - Vùng giá: {s.EntryBottom} - {s.EntryTop}");
-                    planMsgBuilder.AppendLine($"  - Stop Loss: {s.StopLoss} (R:R ~ {s.RiskRewardRatio})");
-                    planMsgBuilder.AppendLine($"  - Logic: {s.Logic}");
+                    planMsgBuilder.AppendLine("🔴 *KỊCH BẢN BÁN (SELL)*");
+                    foreach (var s in tradingPlan.SellScenarios)
+                    {
+                        string tpString = s.TakeProfits != null && s.TakeProfits.Any() ? string.Join(" / ", s.TakeProfits) : "N/A";
+                        planMsgBuilder.AppendLine($"• {s.ZoneName}:");
+                        planMsgBuilder.AppendLine($"  - Vùng giá: {s.EntryBottom} - {s.EntryTop}");
+                        planMsgBuilder.AppendLine($"  - Stop Loss: {s.StopLoss} (R:R ~ {s.RiskRewardRatio})");
+                        planMsgBuilder.AppendLine($"  - Take Profit: {tpString}");
+                        planMsgBuilder.AppendLine($"  - Logic: {s.Logic}");
+                    }
+                    planMsgBuilder.AppendLine();
                 }
-                planMsgBuilder.AppendLine();
-            }
 
-            if (tradingPlan.BuyScenarios != null && tradingPlan.BuyScenarios.Any())
-            {
-                planMsgBuilder.AppendLine("🟢 *KỊCH BẢN MUA (BUY)*");
-                foreach (var b in tradingPlan.BuyScenarios)
+                if (tradingPlan.BuyScenarios != null && tradingPlan.BuyScenarios.Any())
                 {
-                    planMsgBuilder.AppendLine($"• {b.ZoneName}:");
-                    planMsgBuilder.AppendLine($"  - Vùng giá: {b.EntryBottom} - {b.EntryTop}");
-                    planMsgBuilder.AppendLine($"  - Stop Loss: {b.StopLoss} (R:R ~ {b.RiskRewardRatio})");
-                    planMsgBuilder.AppendLine($"  - Logic: {b.Logic}");
+                    planMsgBuilder.AppendLine("🟢 *KỊCH BẢN MUA (BUY)*");
+                    foreach (var b in tradingPlan.BuyScenarios)
+                    {
+                        string tpString = b.TakeProfits != null && b.TakeProfits.Any() ? string.Join(" / ", b.TakeProfits) : "N/A";
+                        planMsgBuilder.AppendLine($"• {b.ZoneName}:");
+                        planMsgBuilder.AppendLine($"  - Vùng giá: {b.EntryBottom} - {b.EntryTop}");
+                        planMsgBuilder.AppendLine($"  - Stop Loss: {b.StopLoss} (R:R ~ {b.RiskRewardRatio})");
+                        planMsgBuilder.AppendLine($"  - Take Profit: {tpString}");
+                        planMsgBuilder.AppendLine($"  - Logic: {b.Logic}");
+                    }
+                    planMsgBuilder.AppendLine();
                 }
-                planMsgBuilder.AppendLine();
-            }
 
-            if (tradingPlan.BreakoutScenarios != null && tradingPlan.BreakoutScenarios.Any())
-            {
-                planMsgBuilder.AppendLine("⚡️ *CẢNH BÁO BREAKOUT*");
-                foreach (var br in tradingPlan.BreakoutScenarios)
+                if (tradingPlan.BreakoutScenarios != null && tradingPlan.BreakoutScenarios.Any())
                 {
-                    planMsgBuilder.AppendLine($"• {br.Type}:");
-                    planMsgBuilder.AppendLine($"  - Điều kiện: {br.Condition}");
-                    planMsgBuilder.AppendLine($"  - Kích hoạt tại: {br.TriggerPrice}");
-                    planMsgBuilder.AppendLine($"  - Stop Loss: {br.StopLoss}");
+                    planMsgBuilder.AppendLine("⚡️ *CẢNH BÁO BREAKOUT*");
+                    foreach (var br in tradingPlan.BreakoutScenarios)
+                    {
+                        string tpString = br.TakeProfits != null && br.TakeProfits.Any() ? string.Join(" / ", br.TakeProfits) : "N/A";
+                        planMsgBuilder.AppendLine($"• {br.Type}:");
+                        planMsgBuilder.AppendLine($"  - Điều kiện: {br.Condition}");
+                        planMsgBuilder.AppendLine($"  - Kích hoạt tại: {br.TriggerPrice}");
+                        planMsgBuilder.AppendLine($"  - Stop Loss: {br.StopLoss}");
+                        planMsgBuilder.AppendLine($"  - Take Profit: {tpString}");
+                    }
                 }
-            }
 
             if ((tradingPlan.SellScenarios == null || !tradingPlan.SellScenarios.Any()) && 
                 (tradingPlan.BuyScenarios == null || !tradingPlan.BuyScenarios.Any()) && 

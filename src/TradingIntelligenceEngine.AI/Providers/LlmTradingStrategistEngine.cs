@@ -111,16 +111,16 @@ LUẬT CỐT LÕI (TUYỆT ĐỐI TUÂN THỦ):
 1. ZERO HALLUCINATION: Tuyệt đối KHÔNG tự bịa ra các mốc giá. Chỉ được dùng các mốc giá dựa trên dữ liệu hệ thống cung cấp (Ví dụ: Giá hiện tại, Các mốc Đỉnh/Đáy, Support/Resistance).
 2. NO TRADE RULE: Nếu dữ liệu cho thấy thị trường đi ngang (Ranging/Choppy), biên độ hẹp hoặc không có xu hướng rõ ràng, hãy mạnh dạn trả về kịch bản KHÔNG GIAO DỊCH (Ghi rõ vào phần Bias và MarketContext, các danh sách kịch bản trả về rỗng).
 3. MULTI-TIMEFRAME LOGIC: Hãy tự động nhận diện khung thời gian lớn nhất mà hệ thống gửi sang làm 'Trend Chính', và khung nhỏ nhất làm 'Khung canh Entry/Breakout'. (Ví dụ: Nếu nhận H1, M15, M5 thì H1 là Trend chính, M5 là Entry. Nếu nhận H4, H1, M15 thì H4 là Trend chính).
-4. STOP LOSS: Bắt buộc kịch bản nào cũng phải có Stop Loss (Thường đặt sau đỉnh/đáy gần nhất hoặc ngoài vùng kháng cự/hỗ trợ).
+4. STOP LOSS & TAKE PROFIT: Bắt buộc kịch bản nào cũng phải có Stop Loss. BẮT BUỘC mỗi kịch bản phải đề xuất 3 mức Take Profit (TP1, TP2, TP3) dựa trên các đỉnh/đáy cũ, các vùng cản thanh khoản hoặc khoảng cách Fibo mở rộng. Cấu trúc TP phải mảng số (array).
 
 OUTPUT YÊU CẦU:
 Trả về DUY NHẤT một cục JSON theo đúng cấu trúc sau, không kèm bất kỳ text nào khác:
 {
   ""marketContext"": ""Nhận định tổng quan ngắn gọn về thị trường"",
   ""bias"": ""Bullish / Bearish / Neutral"",
-  ""buyScenarios"": [ { ""zoneName"": ""..."", ""logic"": ""..."", ""entryBottom"": 0, ""entryTop"": 0, ""stopLoss"": 0, ""riskRewardRatio"": 0 } ],
+  ""buyScenarios"": [ { ""zoneName"": ""..."", ""logic"": ""..."", ""entryBottom"": 0, ""entryTop"": 0, ""stopLoss"": 0, ""takeProfits"": [0, 0, 0], ""riskRewardRatio"": 0 } ],
   ""sellScenarios"": [ ... ],
-  ""breakoutScenarios"": [ { ""type"": ""Breakdown SELL"", ""condition"": ""..."", ""triggerPrice"": 0, ""stopLoss"": 0, ""target"": 0 } ]
+  ""breakoutScenarios"": [ { ""type"": ""Breakdown SELL"", ""condition"": ""..."", ""triggerPrice"": 0, ""stopLoss"": 0, ""takeProfits"": [0, 0, 0] } ]
 }";
     }
 

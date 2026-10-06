@@ -8,6 +8,7 @@ public record TradingZone(
     decimal EntryBottom,
     decimal EntryTop,
     decimal StopLoss,
+    List<decimal>? TakeProfits,
     decimal RiskRewardRatio
 );
 
@@ -16,7 +17,7 @@ public record BreakoutScenario(
     string Condition,
     decimal TriggerPrice,
     decimal StopLoss,
-    decimal Target
+    List<decimal>? TakeProfits
 );
 
 public record TradingPlanResponse(
