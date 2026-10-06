@@ -143,9 +143,23 @@ Trả về DUY NHẤT một cục JSON theo đúng cấu trúc sau, không kèm 
             {
                 sb.AppendLine($"Trạng thái thị trường (Regime): {state.Regime.Type}");
             }
+
+            if (state.Events != null && state.Events.Count > 0)
+            {
+                sb.AppendLine($"Sự kiện phá vỡ (Breakout/CHOCH): {string.Join(", ", state.Events.Select(e => $"{e.Type} at {e.Price}"))}");
+            }
+
+            if (state.Liquidity != null && state.Liquidity.ActiveLevels.Count > 0)
+            {
+                sb.AppendLine("Các mức Thanh khoản (Hỗ trợ/Kháng cự tiềm năng):");
+                foreach (var level in state.Liquidity.ActiveLevels)
+                {
+                    sb.AppendLine($"- {level.Type} (Price: {level.Price})");
+                }
+            }
         }
 
-        sb.AppendLine("\nDựa vào dữ liệu trên, hãy sinh JSON TradingPlanResponse.");
+        sb.AppendLine("\nDựa vào dữ liệu trên, hãy sinh JSON TradingPlanResponse. Trích xuất Entry Price và Stop Loss từ các mức 'Sự kiện phá vỡ' và 'Mức thanh khoản' ở trên. Nếu có mức giá để làm cản, bắt buộc phải trả về kịch bản.");
         return sb.ToString();
     }
 }
