@@ -22,6 +22,9 @@ using TradingIntelligenceEngine.Domain.AI;
 using TradingIntelligenceEngine.Api.Data;
 using TradingIntelligenceEngine.Application.Interfaces;
 using TradingIntelligenceEngine.Signal.Notifications;
+using Hangfire;
+using Hangfire.MemoryStorage;
+using TradingIntelligenceEngine.Api.Jobs;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -32,6 +35,16 @@ builder.Services.AddControllers()
         options.JsonSerializerOptions.Converters.Add(new System.Text.Json.Serialization.JsonStringEnumConverter());
     });
 builder.Services.AddEndpointsApiExplorer();
+builder.Services.AddMemoryCache(); // Register In-Memory Cache
+
+// Register Hangfire (Memory Storage for Dev/Testing)
+builder.Services.AddHangfire(configuration => configuration
+    .SetDataCompatibilityLevel(CompatibilityLevel.Version_180)
+    .UseSimpleAssemblyNameTypeSerializer()
+    .UseRecommendedSerializerSettings()
+    .UseMemoryStorage());
+builder.Services.AddHangfireServer();
+
 builder.Services.AddSwaggerGen(c =>
 {
     c.SwaggerDoc("v1", new Microsoft.OpenApi.Models.OpenApiInfo 
@@ -71,7 +84,9 @@ builder.Services.AddTransient<ILiquidityAnalyzer, LiquidityAnalyzer>();
 builder.Services.AddTransient<ISupportResistanceAnalyzer, SupportResistanceAnalyzer>();
 builder.Services.AddTransient<IRegimeAnalyzer, RegimeAnalyzer>();
 
+builder.Services.AddSingleton<IMarketDataStore, InMemoryMarketDataStore>(); // Register Data Store
 builder.Services.AddTransient<IMarketAnalyzer, MarketAnalyzerService>();
+builder.Services.AddTransient<IAiNotificationJob, AiNotificationJob>(); // Register Hangfire Job
 
 builder.Services.AddTransient<ITradingStrategy, TrendFollowingPullbackStrategy>();
 builder.Services.AddTransient<IStrategyEngine, StrategyEngine>();
@@ -79,6 +94,7 @@ builder.Services.AddTransient<IStrategyEngine, StrategyEngine>();
 builder.Services.AddTransient<IBacktestEngine, BacktestEngine>();
 
 builder.Services.AddHttpClient<IAiDecisionEngine, LlmDecisionEngine>();
+builder.Services.AddHttpClient<ITradingStrategistEngine, LlmTradingStrategistEngine>();
 
 // 3. Register Notification Service
 var notificationProvider = builder.Configuration["Notification:Provider"];
@@ -103,6 +119,8 @@ app.UseSwaggerUI(c =>
 {
     c.SwaggerEndpoint("/swagger/v1/swagger.json", "TradingIntelligenceEngine.Api v1");
 });
+
+app.UseHangfireDashboard(); // Kích hoạt UI Dashboard theo dõi Background Job
 
 app.UseAuthorization();
 app.MapControllers();

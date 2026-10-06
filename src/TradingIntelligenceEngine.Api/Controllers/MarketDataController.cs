@@ -4,8 +4,11 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using TradingIntelligenceEngine.Application.DTOs.MarketData;
 using TradingIntelligenceEngine.Application.Interfaces;
+using TradingIntelligenceEngine.Domain.AI;
 using TradingIntelligenceEngine.Domain.MarketData;
 using TradingIntelligenceEngine.Domain.MarketState;
+using Hangfire;
+using TradingIntelligenceEngine.Api.Jobs;
 
 namespace TradingIntelligenceEngine.Api.Controllers;
 
@@ -15,15 +18,21 @@ public class MarketDataController : ControllerBase
 {
     private readonly INotificationService _notificationService;
     private readonly IMarketAnalyzer _marketAnalyzer;
+    private readonly IMarketDataStore _marketDataStore;
+    private readonly IBackgroundJobClient _backgroundJobClient;
     private readonly ILogger<MarketDataController> _logger;
 
     public MarketDataController(
         INotificationService notificationService,
         IMarketAnalyzer marketAnalyzer,
+        IMarketDataStore marketDataStore,
+        IBackgroundJobClient backgroundJobClient,
         ILogger<MarketDataController> logger)
     {
         _notificationService = notificationService;
         _marketAnalyzer = marketAnalyzer;
+        _marketDataStore = marketDataStore;
+        _backgroundJobClient = backgroundJobClient;
         _logger = logger;
     }
 
@@ -57,6 +66,9 @@ public class MarketDataController : ControllerBase
                     close: c.Close,
                     volume: c.TickVolume
                 )).ToList();
+
+                // Lưu dữ liệu vào RAM
+                await _marketDataStore.InitializeCandlesAsync(request.Symbol, tfData.Key, tfData.Value);
 
                 // Run the core Quant Algorithm (Phase 1)
                 var analysisRequest = new MarketAnalysisRequest(request.Symbol, timeframeEnum, domainCandles);
@@ -100,22 +112,141 @@ public class MarketDataController : ControllerBase
             msgBuilder.AppendLine("⏳ *Đang chuyển dữ liệu cho AI (Giai đoạn 2) để lên Kịch bản chi tiết...*");
 
             string message = msgBuilder.ToString();
-
             _logger.LogInformation("Phân tích thành công {Symbol}. Tổng nến: {TotalCandles}", request.Symbol, totalCandles);
-            
             await _notificationService.SendMessageAsync(message);
 
-            // Trả về JSON Data của thuật toán để kiểm tra
+            // GIAI ĐOẠN 2: Gọi AI Lên Kịch Bản thông qua HANGFIRE (Background Job)
+            _backgroundJobClient.Enqueue<IAiNotificationJob>(job => job.GenerateAndNotifyPlanAsync(request.Symbol, analysisResults));
+
+            // Trả về response ngay lập tức cho EA/Postman mà không cần chờ AI
             return Ok(new 
             { 
                 success = true, 
-                message = "Phân tích cấu trúc thành công.",
-                data = analysisResults
+                message = "Phân tích cấu trúc thành công. Kế hoạch giao dịch đã được đưa vào hàng đợi Hangfire (Background Job).",
+                analysis = analysisResults
             });
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Lỗi hệ thống khi phân tích Market Data.");
+            return StatusCode(500, new { success = false, message = "Đã xảy ra lỗi nội bộ." });
+        }
+    }
+
+    [HttpPost("update")]
+    public async Task<IActionResult> Update([FromBody] MarketDataUpdateRequest request)
+    {
+        if (request == null || string.IsNullOrEmpty(request.Symbol) || !request.Timeframes.Any())
+        {
+            return BadRequest(new { success = false, message = "Dữ liệu nạp vào không hợp lệ." });
+        }
+
+        try
+        {
+            var analysisResults = new Dictionary<string, MarketState>();
+            bool hasStructuralChange = false;
+
+            foreach (var tfData in request.Timeframes)
+            {
+                var timeframeStr = tfData.Key;
+                var newCandle = tfData.Value;
+
+                // 1. Nạp nến mới vào mảng trong RAM
+                await _marketDataStore.AppendCandleAsync(request.Symbol, timeframeStr, newCandle);
+
+                // 2. Lấy lại toàn bộ mảng nến hiện hành để tính toán lại Cấu trúc
+                var cachedCandles = await _marketDataStore.GetCandlesAsync(request.Symbol, timeframeStr);
+                
+                if (Enum.TryParse<Timeframe>(timeframeStr, true, out var timeframeEnum))
+                {
+                    var domainCandles = cachedCandles.Select(c => new Candle(
+                        time: DateTimeOffset.FromUnixTimeSeconds(c.Time),
+                        open: c.Open,
+                        high: c.High,
+                        low: c.Low,
+                        close: c.Close,
+                        volume: c.TickVolume
+                    )).ToList();
+
+                    var analysisRequest = new MarketAnalysisRequest(request.Symbol, timeframeEnum, domainCandles);
+                    var newState = _marketAnalyzer.Analyze(analysisRequest);
+                    analysisResults.Add(timeframeStr, newState);
+                }
+            }
+
+            // 3. GIAI ĐOẠN 3 (STATEFUL CHECK): So sánh trạng thái mới với trạng thái cũ
+            var oldState = await _marketDataStore.GetLatestStateAsync(request.Symbol);
+            var latestPlan = await _marketDataStore.GetLatestPlanAsync(request.Symbol);
+
+            if (oldState != null)
+            {
+                // Kiểm tra xem có cấu trúc mới không (Ví dụ: Số lượng Events phá vỡ thay đổi)
+                // Một cách đơn giản là check xem LastLabel của khung H1 có thay đổi không
+                foreach (var tf in analysisResults.Keys)
+                {
+                    if (oldState.TryGetValue(tf, out var oldTfState))
+                    {
+                        var newTfState = analysisResults[tf];
+                        
+                        // Detect Structure change (e.g., from HH to HL, or a new BoS event)
+                        if (newTfState.Structure?.LastLabel != oldTfState.Structure?.LastLabel)
+                        {
+                            hasStructuralChange = true;
+                            _logger.LogInformation("Phát hiện thay đổi cấu trúc ở khung {TF}: {Old} -> {New}", tf, oldTfState.Structure?.LastLabel, newTfState.Structure?.LastLabel);
+                        }
+                    }
+                }
+            }
+
+            // GỌI LẠI AI NẾU CÓ TRIGGER
+            bool shouldTriggerAi = false;
+            string triggerReason = "";
+
+            if (latestPlan != null)
+            {
+                // TH1: AI đang bảo "NO TRADE", nhưng nay cấu trúc đã thay đổi
+                if (!latestPlan.BuyScenarios.Any() && !latestPlan.SellScenarios.Any() && hasStructuralChange)
+                {
+                    shouldTriggerAi = true;
+                    triggerReason = "Cấu trúc vừa thay đổi, gọi AI để xem đã có setup giao dịch chưa.";
+                }
+                
+                // TH2: Giá hiện tại đã cắn Stop Loss của các kịch bản cũ (Invalidation)
+                var currentPrice = analysisResults.Values.FirstOrDefault()?.CurrentPrice ?? 0;
+                
+                if (currentPrice > 0)
+                {
+                    bool hitStopLoss = latestPlan.SellScenarios.Any(s => currentPrice >= s.StopLoss) ||
+                                       latestPlan.BuyScenarios.Any(b => currentPrice <= b.StopLoss);
+                    
+                    if (hitStopLoss)
+                    {
+                        shouldTriggerAi = true;
+                        triggerReason = "Giá đã cắn Stop Loss của kế hoạch cũ. Đang tính toán lại...";
+                    }
+                }
+            }
+
+            if (shouldTriggerAi)
+            {
+                _logger.LogInformation("TRIGGER KÍCH HOẠT: {Reason}", triggerReason);
+                await _notificationService.SendMessageAsync($"🚨 *CẬP NHẬT KHẨN CẤP:* {triggerReason}");
+                
+                // Đẩy vào Hangfire để gọi lại AI
+                _backgroundJobClient.Enqueue<IAiNotificationJob>(job => job.GenerateAndNotifyPlanAsync(request.Symbol, analysisResults));
+            }
+
+            return Ok(new 
+            { 
+                success = true, 
+                message = "Cập nhật nến thành công.",
+                triggered_ai = shouldTriggerAi,
+                reason = triggerReason
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Lỗi khi cập nhật Market Data.");
             return StatusCode(500, new { success = false, message = "Đã xảy ra lỗi nội bộ." });
         }
     }

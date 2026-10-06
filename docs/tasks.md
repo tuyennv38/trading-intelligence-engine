@@ -9,8 +9,8 @@ Dưới đây là danh sách các công việc (Task List) được trích xuấ
 - [x] Cài đặt `INotificationService` (Hỗ trợ Google Chat Webhook).
 - [x] Đưa Webhook URL thực tế vào cấu hình `launchSettings.json`.
 - [x] Đăng ký `GoogleChatNotificationService` vào Dependency Injection trong `Program.cs`.
-- [ ] Viết API endpoint `POST /update` (để hứng nến 2 phút/lần).
-- [ ] Thiết lập logic lưu trữ mảng nến 1000 cây (Dùng `IMemoryCache` hoặc Redis) để khi `/update` gọi thì append nến mới.
+- [x] Viết API endpoint `POST /update` (để hứng nến 2 phút/lần).
+- [x] Thiết lập logic lưu trữ mảng nến 1000 cây (Dùng `IMemoryCache` hoặc Redis) để khi `/update` gọi thì append nến mới.
 
 ### 1.2. Module Market Structure (Cấu trúc giá)
 - [ ] Code thuật toán `SwingPointCalculator` để tìm Đỉnh/Đáy (Swing High / Swing Low).
@@ -25,9 +25,9 @@ Dưới đây là danh sách các công việc (Task List) được trích xuấ
 ---
 
 ## GIAI ĐOẠN 2: AI INTEGRATION (Tích hợp AI & Kịch bản)
-- [ ] Tạo DTO `TradingPlanResponse` (Định nghĩa cấu trúc output cho kịch bản).
-- [ ] Viết System Prompt chuyên gia cho Institutional Trader.
-- [ ] Gọi SDK `Azure.AI.OpenAI` hoặc `SemanticKernel` để truyền dữ liệu JSON thô (từ GĐ 1) cho AI.
+- [x] Tạo DTO `TradingPlanResponse` (Định nghĩa cấu trúc output cho kịch bản).
+- [x] Viết System Prompt chuyên gia cho Institutional Trader.
+- [x] Gọi SDK `Azure.AI.OpenAI` hoặc `SemanticKernel` để truyền dữ liệu JSON thô (từ GĐ 1) cho AI.
 - [ ] Code hàm `Validator` kiểm tra mức độ chênh lệch giá của AI sinh ra (chống Ảo giác).
 
 ---
