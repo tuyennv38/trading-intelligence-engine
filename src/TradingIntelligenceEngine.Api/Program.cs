@@ -20,6 +20,8 @@ using TradingIntelligenceEngine.Backtesting.Simulation;
 using TradingIntelligenceEngine.AI.Providers;
 using TradingIntelligenceEngine.Domain.AI;
 using TradingIntelligenceEngine.Api.Data;
+using TradingIntelligenceEngine.Application.Interfaces;
+using TradingIntelligenceEngine.Signal.Notifications;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -77,6 +79,13 @@ builder.Services.AddTransient<IStrategyEngine, StrategyEngine>();
 builder.Services.AddTransient<IBacktestEngine, BacktestEngine>();
 
 builder.Services.AddHttpClient<IAiDecisionEngine, LlmDecisionEngine>();
+
+// 3. Register Notification Service
+var notificationProvider = builder.Configuration["Notification:Provider"];
+if (notificationProvider == "GoogleChat")
+{
+    builder.Services.AddHttpClient<INotificationService, GoogleChatNotificationService>();
+}
 
 builder.Services.AddSingleton<IClickhouseContext, ClickhouseContext>();
 builder.Services.AddSingleton<TradingIntelligenceEngine.Api.Services.IClickhouseLogger, TradingIntelligenceEngine.Api.Services.ClickhouseLogger>();

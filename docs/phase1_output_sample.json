@@ -1,0 +1,63 @@
+{
+  "symbol": "XAUUSD",
+  "current_price": 4145.0,
+  "analyzed_timeframes": ["H4", "H1", "M15"],
+  
+  "market_structure": {
+    "macro_trend_H4": "Bearish",
+    "micro_trend_H1": "Bearish",
+    "last_swing_high": 4220.0,
+    "last_swing_low": 4123.0,
+    "recent_event": "Liquidity Sweep at 4220, followed by Break of Structure (BoS) downwards."
+  },
+
+  "volume_profile": {
+    "poc_level": 4150.0,
+    "value_area_high": 4190.0,
+    "value_area_low": 4125.0,
+    "high_volume_nodes_hvn": [4150.0, 4177.0, 4187.0],
+    "low_volume_nodes_lvn": [4160.0, 4182.0]
+  },
+
+  "supply_demand_zones": {
+    "supply_zones": [
+      {
+        "zone_type": "Minor Supply",
+        "bottom_price": 4150.0,
+        "top_price": 4152.0,
+        "is_fresh": false,
+        "confluence": ["HVN", "Previous Support turned Resistance"]
+      },
+      {
+        "zone_type": "Major Supply",
+        "bottom_price": 4176.0,
+        "top_price": 4178.0,
+        "is_fresh": true,
+        "confluence": ["HVN", "Imbalance Candle Origin"]
+      },
+      {
+        "zone_type": "Extreme Supply",
+        "bottom_price": 4187.0,
+        "top_price": 4188.0,
+        "is_fresh": true,
+        "confluence": ["Fibonacci 0.618", "Swing High"]
+      }
+    ],
+    "demand_zones": [
+      {
+        "zone_type": "Major Demand",
+        "bottom_price": 4123.0,
+        "top_price": 4125.0,
+        "is_fresh": false,
+        "confluence": ["Base Support"]
+      },
+      {
+        "zone_type": "Extreme Demand",
+        "bottom_price": 4090.0,
+        "top_price": 4093.0,
+        "is_fresh": true,
+        "confluence": ["Psychological Level"]
+      }
+    ]
+  }
+}

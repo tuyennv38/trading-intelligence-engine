@@ -16,10 +16,12 @@
       "applicationUrl": "http://localhost:5149",
       "environmentVariables": {
         "ASPNETCORE_ENVIRONMENT": "Development",
-        "CLICKHOUSE_LOG_URI": "Host=<YOUR_HOST>;Port=8123;Username=<YOUR_USERNAME>;Password=<YOUR_PASSWORD>;Database=<YOUR_DATABASE>",
-        "AiProvider__BaseUrl": "<YOUR_AI_BASE_URL>",
-        "AiProvider__ApiKey": "<YOUR_AI_API_KEY>",
-        "AiProvider__Model": "ag/gemini-3.1-pro-low"
+        "CLICKHOUSE_LOG_URI": "Host=gsmdev.cscmobicorp.com;Port=8123;Username=rootadmin;Password=cscDbDev2015;Database=gsm_analytics",
+        "AiProvider__BaseUrl": "https://9router.cscmobicorp.com/v1",
+        "AiProvider__ApiKey": "sk-7ba9b50455a397c2-9ul9a1-a4689e2b",
+        "AiProvider__Model": "ag/gemini-3.1-pro-low",
+        "Notification__Provider": "GoogleChat",
+        "Notification__GoogleChatWebhookUrl": "https://chat.googleapis.com/v1/spaces/AAQA9xSV-40/messages?key=AIzaSyDdI0hCZtE6vySjMm-WEfRq3CPzqKqqsHI&token=HYgZ84bh_GYiYW9fnOWwI1QGvCKzyPbrP2AnKSlGUCc"
       }
     },
     "https": {
@@ -29,10 +31,12 @@
       "applicationUrl": "https://localhost:7024;http://localhost:5149",
       "environmentVariables": {
         "ASPNETCORE_ENVIRONMENT": "Development",
-        "CLICKHOUSE_LOG_URI": "Host=<YOUR_HOST>;Port=8123;Username=<YOUR_USERNAME>;Password=<YOUR_PASSWORD>;Database=<YOUR_DATABASE>",
-        "AiProvider__BaseUrl": "<YOUR_AI_BASE_URL>",
-        "AiProvider__ApiKey": "<YOUR_AI_API_KEY>",
-        "AiProvider__Model": "ag/gemini-3.1-pro-low"
+        "CLICKHOUSE_LOG_URI": "Host=gsmdev.cscmobicorp.com;Port=8123;Username=rootadmin;Password=cscDbDev2015;Database=gsm_analytics",
+        "AiProvider__BaseUrl": "https://9router.cscmobicorp.com/v1",
+        "AiProvider__ApiKey": "sk-7ba9b50455a397c2-9ul9a1-a4689e2b",
+        "AiProvider__Model": "ag/gemini-3.1-pro-low",
+        "Notification__Provider": "GoogleChat",
+        "Notification__GoogleChatWebhookUrl": "https://chat.googleapis.com/v1/spaces/AAQA9xSV-40/messages?key=AIzaSyDdI0hCZtE6vySjMm-WEfRq3CPzqKqqsHI&token=HYgZ84bh_GYiYW9fnOWwI1QGvCKzyPbrP2AnKSlGUCc"
       }
     }
   }
