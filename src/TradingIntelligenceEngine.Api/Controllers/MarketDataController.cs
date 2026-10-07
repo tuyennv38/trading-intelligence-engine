@@ -250,10 +250,29 @@ public class MarketDataController : ControllerBase
 
             if (latestPlan != null)
             {
-                // TÍNH TOÁN HIGH/LOW CỦA NẾN MỚI NHẤT ĐỂ CHECK STATE (ISACTIVE) VÀ STOP LOSS CHÍNH XÁC
-                decimal currentPrice = analysisResults.Values.FirstOrDefault()?.CurrentPrice ?? 0;
-                decimal maxHigh = request.Timeframes.Values.Max(c => c.High);
-                decimal minLow = request.Timeframes.Values.Min(c => c.Low);
+                // TÍNH TOÁN HIGH/LOW TỪ KHUNG THỜI GIAN NHỎ NHẤT (Để tránh lấy râu nến quá khứ của khung H1/H4)
+                var smallestTfKey = request.Timeframes.Keys
+                    .OrderBy(k => Enum.TryParse<Timeframe>(k, true, out var tf) ? (int)tf : 99)
+                    .FirstOrDefault();
+
+                decimal maxHigh = 0;
+                decimal minLow = 0;
+                decimal currentPrice = 0;
+
+                if (smallestTfKey != null)
+                {
+                    var triggerCandle = request.Timeframes[smallestTfKey];
+                    maxHigh = triggerCandle.High;
+                    minLow = triggerCandle.Low;
+                    currentPrice = triggerCandle.Close;
+                }
+                else
+                {
+                    currentPrice = analysisResults.Values.FirstOrDefault()?.CurrentPrice ?? 0;
+                    maxHigh = currentPrice;
+                    minLow = currentPrice;
+                }
+                
                 bool planUpdated = false;
 
                 // 1. Cập nhật trạng thái IsActive (Đã cắn Entry chưa?)
