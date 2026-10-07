@@ -21,6 +21,12 @@ File này định nghĩa các quy tắc vàng (Golden Rules) để tránh các l
   - Bắt buộc phải gắn kèm các điều kiện MÔ HÌNH NẾN ĐẢO CHIỀU (Price Action Patterns).
   - **Ví dụ đúng:** *Canh Mua tại vùng 4151-4154. Tuyệt đối không Limit. Bắt buộc chờ xuất hiện nến Pinbar rút chân dài hoặc nến Bullish Engulfing (Nhấn chìm tăng) trên khung M5 tại vùng này mới được phép kích hoạt lệnh.*
 
+## 5. QUY TẮC CẤM ĐÁNH XUNG ĐỘT TẠI CÙNG 1 VÙNG GIÁ (Anti-Hedging)
+- **Lỗi thường gặp:** AI cho kịch bản BÁN ở vùng `4123 - 4127`, Stop Loss `4131`. Sau đó lại cho kịch bản Breakout MUA tại `4127`. => Nếu giá lên `4128`, nó vừa kích hoạt Breakout Mua, vừa đang âm trạng thái của lệnh Bán (vì chưa cắn SL 4131). Hành vi tự đấm vào mặt nhau (Hedging) này là đại kỵ trong giao dịch!
+- **Cách khắc phục:** 
+  - Chỉ chọn **MỘT hướng giao dịch** tại một vùng giá.
+  - Hệ thống code C# đã có chức năng **TỰ ĐỘNG GỌI LẠI AI khi cắn Stop Loss**. Do đó, bạn không cần phải đưa ra kịch bản Breakout "dự phòng" cho lệnh Limit. Nếu bạn đánh giá cản đó cứng, hãy chỉ lên Kịch bản BÁN. Nếu cản đó vỡ, giá đâm thủng Stop Loss, Bot sẽ gọi bạn dậy để tính toán nhịp Breakout sau!
+  - Tuyệt đối Mốc kích hoạt Breakout (Trigger Price) **KHÔNG BAO GIỜ** được nằm bên trong khoảng cách từ Entry đến Stop Loss của một lệnh ngược chiều.
 ## 4. QUY TẮC UPDATE THÔNG BÁO CẮN STOP LOSS
 Hệ thống C# (MarketDataController) đã được lập trình để tự động bắt lỗi cắn Stop Loss và in ra thông báo rõ ràng.
 Ví dụ: `🚨 CẬP NHẬT KHẨN CẤP: Giá (4140) đã cắn Stop Loss (4141) của kịch bản MUA [M15/M5 Aggressive Pullback Support]. Đang tính toán lại...`

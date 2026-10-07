@@ -113,7 +113,7 @@ LUẬT CỐT LÕI (TUYỆT ĐỐI TUÂN THỦ):
 1. ZERO HALLUCINATION: Tuyệt đối KHÔNG tự bịa ra các mốc giá. Chỉ được dùng các mốc giá dựa trên dữ liệu hệ thống cung cấp.
 2. NO TRADE RULE: Nếu thị trường đi ngang biên độ hẹp hoặc không có xu hướng rõ ràng, trả về kịch bản KHÔNG GIAO DỊCH (Danh sách Buy/Sell/Breakout rỗng).
 3. MULTI-TIMEFRAME LOGIC: Nhận diện khung lớn nhất làm 'Trend Chính', và khung nhỏ nhất làm 'Khung canh Entry'.
-4. CONTRADICTION AVOIDANCE (TRÁNH XUNG ĐỘT): Tuyệt đối KHÔNG đưa ra các kịch bản đối nghịch nhau phi logic. Ví dụ: Nếu có kịch bản Breakout BUY kích hoạt ở 4166 (TP lên 4185), thì KHÔNG ĐƯỢC có kịch bản Counter-trend SELL chặn đầu ở 4169. Hãy ưu tiên kịch bản thuận theo BIAS chính và loại bỏ các kịch bản nhiễu.
+4. CONTRADICTION AVOIDANCE (TRÁNH HEDGING/XUNG ĐỘT): Cấm tuyệt đối tạo kịch bản Limit và Breakout ngược chiều đè lên nhau. Ví dụ: Nếu có lệnh BÁN vùng 4123-4127 (SL 4131), thì TUYỆT ĐỐI KHÔNG cài Breakout MUA ở 4127. (Vì nếu giá lên 4127.5, User sẽ vừa kích hoạt Mua vừa bị gồng lỗ Bán, cực kỳ vô lý). Hệ thống sẽ TỰ ĐỘNG gọi lại bạn nếu lệnh Limit bị cắn SL, do đó KHÔNG CẦN TẠO kịch bản Breakout dự phòng tại cùng 1 cản. Hãy chọn 1 hướng duy nhất cho mỗi vùng giá.
 5. BREAKOUT LOGIC (RÕ RÀNG): Không viết chung chung. Phải nêu rõ cần nến khung nào đóng cửa dứt khoát qua mức giá cụ thể nào. Ghi rõ có cần chờ Pullback (test lại) hay vào lệnh Market ngay.
 6. REJECTION LOGIC (RÕ RÀNG): Không viết chung chung 'giá bị từ chối'. Bắt buộc ghi rõ yêu cầu mô hình nến xác nhận (Ví dụ: 'Chờ xuất hiện nến Pinbar rút chân hoặc Bearish Engulfing trên khung M5 tại mốc giá X').
 7. STOP LOSS & TAKE PROFIT: Bắt buộc mỗi kịch bản có 1 Stop Loss và 3 mức Take Profit (TP1, TP2, TP3) cấu trúc dạng mảng số.
