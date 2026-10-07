@@ -250,66 +250,113 @@ public class MarketDataController : ControllerBase
 
             if (latestPlan != null)
             {
+                // TÍNH TOÁN HIGH/LOW CỦA NẾN MỚI NHẤT ĐỂ CHECK STATE (ISACTIVE) VÀ STOP LOSS CHÍNH XÁC
+                decimal currentPrice = analysisResults.Values.FirstOrDefault()?.CurrentPrice ?? 0;
+                decimal maxHigh = request.Timeframes.Values.Max(c => c.High);
+                decimal minLow = request.Timeframes.Values.Min(c => c.Low);
+                bool planUpdated = false;
+
+                // 1. Cập nhật trạng thái IsActive (Đã cắn Entry chưa?)
+                if (latestPlan.BuyScenarios != null)
+                {
+                    foreach (var b in latestPlan.BuyScenarios)
+                    {
+                        if (!b.IsActive && minLow <= b.EntryTop)
+                        { b.IsActive = true; planUpdated = true; }
+                    }
+                }
+                
+                if (latestPlan.SellScenarios != null)
+                {
+                    foreach (var s in latestPlan.SellScenarios)
+                    {
+                        if (!s.IsActive && maxHigh >= s.EntryBottom)
+                        { s.IsActive = true; planUpdated = true; }
+                    }
+                }
+
+                if (latestPlan.BreakoutScenarios != null)
+                {
+                    foreach (var br in latestPlan.BreakoutScenarios)
+                    {
+                        if (!br.IsActive)
+                        {
+                            if (br.Type.Contains("BUY", StringComparison.OrdinalIgnoreCase) && maxHigh >= br.TriggerPrice)
+                            { br.IsActive = true; planUpdated = true; }
+                            else if (br.Type.Contains("SELL", StringComparison.OrdinalIgnoreCase) && minLow <= br.TriggerPrice)
+                            { br.IsActive = true; planUpdated = true; }
+                        }
+                    }
+                }
+
+                // Nếu có sự thay đổi State thì lưu lại Plan vào Cache ngay lập tức
+                if (planUpdated)
+                {
+                    await _marketDataStore.SetLatestPlanAsync(request.Symbol, latestPlan);
+                }
+
                 // TH1: AI đang bảo "NO TRADE", nhưng nay cấu trúc đã thay đổi
-                if (!latestPlan.BuyScenarios.Any() && !latestPlan.SellScenarios.Any() && hasStructuralChange)
+                if ((latestPlan.BuyScenarios == null || !latestPlan.BuyScenarios.Any()) && 
+                    (latestPlan.SellScenarios == null || !latestPlan.SellScenarios.Any()) && hasStructuralChange)
                 {
                     shouldTriggerAi = true;
                     triggerReason = "Cấu trúc vừa thay đổi, gọi AI để xem đã có setup giao dịch chưa.";
                 }
                 
-                // TH2: Giá hiện tại đã cắn Stop Loss của các kịch bản cũ (Invalidation)
-                var currentPrice = analysisResults.Values.FirstOrDefault()?.CurrentPrice ?? 0;
-                
+                // TH2: Giá hiện tại đã cắn Stop Loss của các kịch bản ĐANG ACTIVE (Invalidation)
                 if (currentPrice > 0)
                 {
-                    var hitSell = latestPlan.SellScenarios?.FirstOrDefault(s => currentPrice >= s.StopLoss);
-                    var hitBuy = latestPlan.BuyScenarios?.FirstOrDefault(b => currentPrice <= b.StopLoss);
+                    var hitSell = latestPlan.SellScenarios?.FirstOrDefault(s => s.IsActive && maxHigh >= s.StopLoss);
+                    var hitBuy = latestPlan.BuyScenarios?.FirstOrDefault(b => b.IsActive && minLow <= b.StopLoss);
                     var hitBreakout = latestPlan.BreakoutScenarios?.FirstOrDefault(br => 
-                        (br.Type.Contains("BUY", StringComparison.OrdinalIgnoreCase) && currentPrice <= br.StopLoss) || 
-                        (br.Type.Contains("SELL", StringComparison.OrdinalIgnoreCase) && currentPrice >= br.StopLoss));
+                        br.IsActive && (
+                            (br.Type.Contains("BUY", StringComparison.OrdinalIgnoreCase) && minLow <= br.StopLoss) || 
+                            (br.Type.Contains("SELL", StringComparison.OrdinalIgnoreCase) && maxHigh >= br.StopLoss)
+                        ));
                     
                     if (hitSell != null)
                     {
                         shouldTriggerAi = true;
-                        triggerReason = $"Giá ({currentPrice}) đã cắn Stop Loss ({hitSell.StopLoss}) của kịch bản BÁN [{hitSell.ZoneName}]. Đang tính toán lại...";
+                        triggerReason = $"Giá ({maxHigh}) đã cắn Stop Loss ({hitSell.StopLoss}) của kịch bản BÁN [{hitSell.ZoneName}]. Đang tính toán lại...";
                     }
                     else if (hitBuy != null)
                     {
                         shouldTriggerAi = true;
-                        triggerReason = $"Giá ({currentPrice}) đã cắn Stop Loss ({hitBuy.StopLoss}) của kịch bản MUA [{hitBuy.ZoneName}]. Đang tính toán lại...";
+                        triggerReason = $"Giá ({minLow}) đã cắn Stop Loss ({hitBuy.StopLoss}) của kịch bản MUA [{hitBuy.ZoneName}]. Đang tính toán lại...";
                     }
                     else if (hitBreakout != null)
                     {
                         shouldTriggerAi = true;
-                        triggerReason = $"Giá ({currentPrice}) đã cắn Stop Loss ({hitBreakout.StopLoss}) của kịch bản BREAKOUT [{hitBreakout.Type}]. Đang tính toán lại...";
+                        decimal hitPrice = hitBreakout.Type.Contains("BUY", StringComparison.OrdinalIgnoreCase) ? minLow : maxHigh;
+                        triggerReason = $"Giá ({hitPrice}) đã cắn Stop Loss ({hitBreakout.StopLoss}) của kịch bản BREAKOUT [{hitBreakout.Type}]. Đang tính toán lại...";
                     }
                     else
                     {
-                        // TH3: Giá hiện tại đã đạt Full TP (Take Profit cuối cùng) của một kịch bản
-                        var hitFullTpBuy = latestPlan.BuyScenarios?.FirstOrDefault(b => b.TakeProfits != null && b.TakeProfits.Any() && currentPrice >= b.TakeProfits.Max());
-                        var hitFullTpSell = latestPlan.SellScenarios?.FirstOrDefault(s => s.TakeProfits != null && s.TakeProfits.Any() && currentPrice <= s.TakeProfits.Min());
-                        var hitFullTpBreakoutBuy = latestPlan.BreakoutScenarios?.FirstOrDefault(br => br.Type.Contains("BUY", StringComparison.OrdinalIgnoreCase) && br.TakeProfits != null && br.TakeProfits.Any() && currentPrice >= br.TakeProfits.Max());
-                        var hitFullTpBreakoutSell = latestPlan.BreakoutScenarios?.FirstOrDefault(br => br.Type.Contains("SELL", StringComparison.OrdinalIgnoreCase) && br.TakeProfits != null && br.TakeProfits.Any() && currentPrice <= br.TakeProfits.Min());
+                        // TH3: Giá hiện tại đã đạt Full TP (Take Profit cuối cùng) của một kịch bản ĐANG ACTIVE
+                        var hitFullTpBuy = latestPlan.BuyScenarios?.FirstOrDefault(b => b.IsActive && b.TakeProfits != null && b.TakeProfits.Any() && maxHigh >= b.TakeProfits.Max());
+                        var hitFullTpSell = latestPlan.SellScenarios?.FirstOrDefault(s => s.IsActive && s.TakeProfits != null && s.TakeProfits.Any() && minLow <= s.TakeProfits.Min());
+                        var hitFullTpBreakoutBuy = latestPlan.BreakoutScenarios?.FirstOrDefault(br => br.IsActive && br.Type.Contains("BUY", StringComparison.OrdinalIgnoreCase) && br.TakeProfits != null && br.TakeProfits.Any() && maxHigh >= br.TakeProfits.Max());
+                        var hitFullTpBreakoutSell = latestPlan.BreakoutScenarios?.FirstOrDefault(br => br.IsActive && br.Type.Contains("SELL", StringComparison.OrdinalIgnoreCase) && br.TakeProfits != null && br.TakeProfits.Any() && minLow <= br.TakeProfits.Min());
 
                         if (hitFullTpBuy != null)
                         {
                             shouldTriggerAi = true;
-                            triggerReason = $"🎉 TUYỆT VỜI! Giá ({currentPrice}) đã lấp đầy toàn bộ TP ({hitFullTpBuy.TakeProfits.Max()}) của kịch bản MUA [{hitFullTpBuy.ZoneName}]. Bắt đầu lấy Plan mới...";
+                            triggerReason = $"🎉 TUYỆT VỜI! Giá ({maxHigh}) đã lấp đầy toàn bộ TP ({hitFullTpBuy.TakeProfits.Max()}) của kịch bản MUA [{hitFullTpBuy.ZoneName}]. Bắt đầu lấy Plan mới...";
                         }
                         else if (hitFullTpSell != null)
                         {
                             shouldTriggerAi = true;
-                            triggerReason = $"🎉 TUYỆT VỜI! Giá ({currentPrice}) đã lấp đầy toàn bộ TP ({hitFullTpSell.TakeProfits.Min()}) của kịch bản BÁN [{hitFullTpSell.ZoneName}]. Bắt đầu lấy Plan mới...";
+                            triggerReason = $"🎉 TUYỆT VỜI! Giá ({minLow}) đã lấp đầy toàn bộ TP ({hitFullTpSell.TakeProfits.Min()}) của kịch bản BÁN [{hitFullTpSell.ZoneName}]. Bắt đầu lấy Plan mới...";
                         }
                         else if (hitFullTpBreakoutBuy != null)
                         {
                             shouldTriggerAi = true;
-                            triggerReason = $"🎉 TUYỆT VỜI! Giá ({currentPrice}) đã lấp đầy toàn bộ TP ({hitFullTpBreakoutBuy.TakeProfits.Max()}) của kịch bản BREAKOUT BUY. Bắt đầu lấy Plan mới...";
+                            triggerReason = $"🎉 TUYỆT VỜI! Giá ({maxHigh}) đã lấp đầy toàn bộ TP ({hitFullTpBreakoutBuy.TakeProfits.Max()}) của kịch bản BREAKOUT BUY. Bắt đầu lấy Plan mới...";
                         }
                         else if (hitFullTpBreakoutSell != null)
                         {
                             shouldTriggerAi = true;
-                            triggerReason = $"🎉 TUYỆT VỜI! Giá ({currentPrice}) đã lấp đầy toàn bộ TP ({hitFullTpBreakoutSell.TakeProfits.Min()}) của kịch bản BREAKOUT SELL. Bắt đầu lấy Plan mới...";
+                            triggerReason = $"🎉 TUYỆT VỜI! Giá ({minLow}) đã lấp đầy toàn bộ TP ({hitFullTpBreakoutSell.TakeProfits.Min()}) của kịch bản BREAKOUT SELL. Bắt đầu lấy Plan mới...";
                         }
                     }
                 }

@@ -10,7 +10,10 @@ public record TradingZone(
     decimal StopLoss,
     List<decimal>? TakeProfits,
     decimal RiskRewardRatio
-);
+)
+{
+    public bool IsActive { get; set; } = false;
+}
 
 public record BreakoutScenario(
     string Type,
@@ -18,7 +21,10 @@ public record BreakoutScenario(
     decimal TriggerPrice,
     decimal StopLoss,
     List<decimal>? TakeProfits
-);
+)
+{
+    public bool IsActive { get; set; } = false;
+}
 
 public record TradingPlanResponse(
     string MarketContext,
