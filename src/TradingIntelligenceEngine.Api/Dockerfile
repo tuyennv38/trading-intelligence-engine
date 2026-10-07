@@ -29,7 +29,7 @@ RUN dotnet restore "src/TradingIntelligenceEngine.Api/TradingIntelligenceEngine.
 
 # Copy the remaining source code
 COPY ["src/", "src/"]
-COPY ["Docs/", "Docs/"]
+COPY ["docs/", "docs/"]
 
 WORKDIR "/src/src/TradingIntelligenceEngine.Api"
 RUN dotnet build "TradingIntelligenceEngine.Api.csproj" -c $BUILD_CONFIGURATION -o /app/build --no-restore
@@ -41,5 +41,5 @@ RUN dotnet publish "TradingIntelligenceEngine.Api.csproj" -c $BUILD_CONFIGURATIO
 FROM base AS final
 WORKDIR /app
 COPY --from=publish /app/publish .
-COPY ["Docs/", "Docs/"]
+COPY ["docs/", "docs/"]
 ENTRYPOINT ["dotnet", "TradingIntelligenceEngine.Api.dll"]
