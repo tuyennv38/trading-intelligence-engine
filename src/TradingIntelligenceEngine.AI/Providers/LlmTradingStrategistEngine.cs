@@ -31,9 +31,11 @@ public class LlmTradingStrategistEngine : ITradingStrategistEngine
     public async Task<TradingPlanResponse> GeneratePlanAsync(
         string symbol,
         Dictionary<string, MarketState> multiTimeframeStates,
+        TradingPlanResponse? previousPlan,
+        string triggerReason,
         CancellationToken cancellationToken)
     {
-        var prompt = BuildPrompt(symbol, multiTimeframeStates);
+        var prompt = BuildPrompt(symbol, multiTimeframeStates, previousPlan, triggerReason);
         
         var requestBody = new
         {
@@ -105,18 +107,20 @@ public class LlmTradingStrategistEngine : ITradingStrategistEngine
     private string GetSystemPrompt()
     {
         return @"Bạn là một AI Trading Strategist (Chuyên gia Cố vấn Giao dịch) cấp tổ chức.
-Nhiệm vụ của bạn là nhận dữ liệu Cấu trúc thị trường và Volume Profile từ thuật toán Quant (đã tính toán sẵn dựa trên các khung thời gian tùy ý người dùng đưa vào), sau đó viết ra một Kế hoạch Giao dịch (Trading Plan) hoàn chỉnh.
+Nhiệm vụ của bạn là nhận dữ liệu Cấu trúc thị trường và Volume Profile từ thuật toán Quant, sau đó viết ra một Kế hoạch Giao dịch (Trading Plan) hoàn chỉnh.
 
 LUẬT CỐT LÕI (TUYỆT ĐỐI TUÂN THỦ):
-1. ZERO HALLUCINATION: Tuyệt đối KHÔNG tự bịa ra các mốc giá. Chỉ được dùng các mốc giá dựa trên dữ liệu hệ thống cung cấp (Ví dụ: Giá hiện tại, Các mốc Đỉnh/Đáy, Support/Resistance).
-2. NO TRADE RULE: Nếu dữ liệu cho thấy thị trường đi ngang (Ranging/Choppy), biên độ hẹp hoặc không có xu hướng rõ ràng, hãy mạnh dạn trả về kịch bản KHÔNG GIAO DỊCH (Ghi rõ vào phần Bias và MarketContext, các danh sách kịch bản trả về rỗng).
-3. MULTI-TIMEFRAME LOGIC: Hãy tự động nhận diện khung thời gian lớn nhất mà hệ thống gửi sang làm 'Trend Chính', và khung nhỏ nhất làm 'Khung canh Entry/Breakout'. (Ví dụ: Nếu nhận H1, M15, M5 thì H1 là Trend chính, M5 là Entry. Nếu nhận H4, H1, M15 thì H4 là Trend chính).
-4. STOP LOSS & TAKE PROFIT: Bắt buộc kịch bản nào cũng phải có Stop Loss. BẮT BUỘC mỗi kịch bản phải đề xuất 3 mức Take Profit (TP1, TP2, TP3) dựa trên các đỉnh/đáy cũ, các vùng cản thanh khoản hoặc khoảng cách Fibo mở rộng. Cấu trúc TP phải mảng số (array).
+1. ZERO HALLUCINATION: Tuyệt đối KHÔNG tự bịa ra các mốc giá. Chỉ được dùng các mốc giá dựa trên dữ liệu hệ thống cung cấp.
+2. NO TRADE RULE: Nếu thị trường đi ngang biên độ hẹp hoặc không có xu hướng rõ ràng, trả về kịch bản KHÔNG GIAO DỊCH (Danh sách Buy/Sell/Breakout rỗng).
+3. MULTI-TIMEFRAME LOGIC: Nhận diện khung lớn nhất làm 'Trend Chính', và khung nhỏ nhất làm 'Khung canh Entry'.
+4. CONTRADICTION AVOIDANCE (TRÁNH XUNG ĐỘT): Tuyệt đối KHÔNG đưa ra các kịch bản đối nghịch nhau phi logic. Ví dụ: Nếu có kịch bản Breakout BUY kích hoạt ở 4166 (TP lên 4185), thì KHÔNG ĐƯỢC có kịch bản Counter-trend SELL chặn đầu ở 4169. Hãy ưu tiên kịch bản thuận theo BIAS chính và loại bỏ các kịch bản nhiễu.
+5. BREAKOUT LOGIC (RÕ RÀNG): Không viết chung chung. Phải nêu rõ cần nến khung nào đóng cửa dứt khoát qua mức giá cụ thể nào. Ghi rõ có cần chờ Pullback (test lại) hay vào lệnh Market ngay.
+6. REJECTION LOGIC (RÕ RÀNG): Không viết chung chung 'giá bị từ chối'. Bắt buộc ghi rõ yêu cầu mô hình nến xác nhận (Ví dụ: 'Chờ xuất hiện nến Pinbar rút chân hoặc Bearish Engulfing trên khung M5 tại mốc giá X').
+7. STOP LOSS & TAKE PROFIT: Bắt buộc mỗi kịch bản có 1 Stop Loss và 3 mức Take Profit (TP1, TP2, TP3) cấu trúc dạng mảng số.
 
-OUTPUT YÊU CẦU:
-Trả về DUY NHẤT một cục JSON theo đúng cấu trúc sau, không kèm bất kỳ text nào khác:
+OUTPUT YÊU CẦU DUY NHẤT LÀ JSON (KHÔNG KÈM TEXT):
 {
-  ""marketContext"": ""Nhận định tổng quan ngắn gọn về thị trường"",
+  ""marketContext"": ""..."",
   ""bias"": ""Bullish / Bearish / Neutral"",
   ""buyScenarios"": [ { ""zoneName"": ""..."", ""logic"": ""..."", ""entryBottom"": 0, ""entryTop"": 0, ""stopLoss"": 0, ""takeProfits"": [0, 0, 0], ""riskRewardRatio"": 0 } ],
   ""sellScenarios"": [ ... ],
@@ -124,10 +128,22 @@ Trả về DUY NHẤT một cục JSON theo đúng cấu trúc sau, không kèm 
 }";
     }
 
-    private string BuildPrompt(string symbol, Dictionary<string, MarketState> multiTimeframeStates)
+    private string BuildPrompt(string symbol, Dictionary<string, MarketState> multiTimeframeStates, TradingPlanResponse? previousPlan, string triggerReason)
     {
         var sb = new StringBuilder();
         sb.AppendLine($"Hãy lập kế hoạch giao dịch cho cặp {symbol}. Dưới đây là dữ liệu từ hệ thống Quant:");
+
+        if (!string.IsNullOrWhiteSpace(triggerReason))
+        {
+            sb.AppendLine($"\n⚠️ BỐI CẢNH LẤY KẾ HOẠCH LẦN NÀY:");
+            sb.AppendLine($"- Lý do cập nhật: {triggerReason}");
+            if (previousPlan != null)
+            {
+                sb.AppendLine("- Kế hoạch trước đó (THAM KHẢO để tránh lặp lại lỗi, KHÔNG BÊ NGUYÊN VÀO):");
+                sb.AppendLine(JsonSerializer.Serialize(previousPlan, new JsonSerializerOptions { WriteIndented = true }));
+                sb.AppendLine("\n>>> LƯU Ý QUAN TRỌNG: Nếu kịch bản cũ vừa bị cắn Stop Loss, TUYỆT ĐỐI KHÔNG xúi giục vào lại đúng vùng giá đó! Hãy tìm setup mới an toàn hơn. Nếu kịch bản cũ đã chốt lời xong toàn phần, hãy tính toán nhịp sóng tiếp theo.");
+            }
+        }
 
         foreach (var kvp in multiTimeframeStates)
         {

@@ -1,17 +1,19 @@
 using System;
+using System.Threading;
 using System.Threading.Tasks;
 using Octonica.ClickHouseClient;
 
 class Program {
     static async Task Main() {
         try {
-            var connStr = "Host=eventlogdev.cscmobicorp.com;Port=9000;User=rootadmin;Password=cscDbDev2015;Database=gsm_logs";
-            Console.WriteLine("Connecting to eventlogdev...");
-            await using var conn = new ClickHouseConnection(connStr);
-            await conn.OpenAsync();
-            Console.WriteLine("Connect OK");
+            Console.WriteLine("STARTING NATIVE GSM DB TEST AS SYNC...");
+            var csBuilder = new ClickHouseConnectionStringBuilder("Host=localhost;Port=9000;User=default;Password=;Database=default");
+            await using var conn = new ClickHouseConnection(csBuilder.ConnectionString);
+            Console.WriteLine("Calling Open()...");
+            conn.Open();
+            Console.WriteLine(">>> Open() COMPLETED SUCCESSFULLY!");
         } catch (Exception ex) {
-            Console.WriteLine("Error: " + ex.Message);
+            Console.WriteLine(">>> Error: " + ex.Message);
         }
     }
 }

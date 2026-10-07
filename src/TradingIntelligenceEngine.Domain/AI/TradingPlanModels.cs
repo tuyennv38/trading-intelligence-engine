@@ -33,5 +33,7 @@ public interface ITradingStrategistEngine
     Task<TradingPlanResponse> GeneratePlanAsync(
         string symbol,
         Dictionary<string, MarketState.MarketState> multiTimeframeStates,
+        TradingPlanResponse? previousPlan,
+        string triggerReason,
         System.Threading.CancellationToken cancellationToken);
 }

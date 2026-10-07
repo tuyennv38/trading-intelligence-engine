@@ -116,7 +116,7 @@ public class MarketDataController : ControllerBase
             await _notificationService.SendMessageAsync(message);
 
             // GIAI ĐOẠN 2: Gọi AI Lên Kịch Bản thông qua HANGFIRE (Background Job)
-            _backgroundJobClient.Enqueue<IAiNotificationJob>(job => job.GenerateAndNotifyPlanAsync(request.Symbol, analysisResults));
+            _backgroundJobClient.Enqueue<IAiNotificationJob>(job => job.GenerateAndNotifyPlanAsync(request.Symbol, analysisResults, "Khởi tạo dữ liệu ban đầu"));
 
             // Trả về response ngay lập tức cho EA/Postman mà không cần chờ AI
             return Ok(new 
@@ -216,13 +216,55 @@ public class MarketDataController : ControllerBase
                 
                 if (currentPrice > 0)
                 {
-                    bool hitStopLoss = latestPlan.SellScenarios.Any(s => currentPrice >= s.StopLoss) ||
-                                       latestPlan.BuyScenarios.Any(b => currentPrice <= b.StopLoss);
+                    var hitSell = latestPlan.SellScenarios?.FirstOrDefault(s => currentPrice >= s.StopLoss);
+                    var hitBuy = latestPlan.BuyScenarios?.FirstOrDefault(b => currentPrice <= b.StopLoss);
+                    var hitBreakout = latestPlan.BreakoutScenarios?.FirstOrDefault(br => 
+                        (br.Type.Contains("BUY", StringComparison.OrdinalIgnoreCase) && currentPrice <= br.StopLoss) || 
+                        (br.Type.Contains("SELL", StringComparison.OrdinalIgnoreCase) && currentPrice >= br.StopLoss));
                     
-                    if (hitStopLoss)
+                    if (hitSell != null)
                     {
                         shouldTriggerAi = true;
-                        triggerReason = "Giá đã cắn Stop Loss của kế hoạch cũ. Đang tính toán lại...";
+                        triggerReason = $"Giá ({currentPrice}) đã cắn Stop Loss ({hitSell.StopLoss}) của kịch bản BÁN [{hitSell.ZoneName}]. Đang tính toán lại...";
+                    }
+                    else if (hitBuy != null)
+                    {
+                        shouldTriggerAi = true;
+                        triggerReason = $"Giá ({currentPrice}) đã cắn Stop Loss ({hitBuy.StopLoss}) của kịch bản MUA [{hitBuy.ZoneName}]. Đang tính toán lại...";
+                    }
+                    else if (hitBreakout != null)
+                    {
+                        shouldTriggerAi = true;
+                        triggerReason = $"Giá ({currentPrice}) đã cắn Stop Loss ({hitBreakout.StopLoss}) của kịch bản BREAKOUT [{hitBreakout.Type}]. Đang tính toán lại...";
+                    }
+                    else
+                    {
+                        // TH3: Giá hiện tại đã đạt Full TP (Take Profit cuối cùng) của một kịch bản
+                        var hitFullTpBuy = latestPlan.BuyScenarios?.FirstOrDefault(b => b.TakeProfits != null && b.TakeProfits.Any() && currentPrice >= b.TakeProfits.Max());
+                        var hitFullTpSell = latestPlan.SellScenarios?.FirstOrDefault(s => s.TakeProfits != null && s.TakeProfits.Any() && currentPrice <= s.TakeProfits.Min());
+                        var hitFullTpBreakoutBuy = latestPlan.BreakoutScenarios?.FirstOrDefault(br => br.Type.Contains("BUY", StringComparison.OrdinalIgnoreCase) && br.TakeProfits != null && br.TakeProfits.Any() && currentPrice >= br.TakeProfits.Max());
+                        var hitFullTpBreakoutSell = latestPlan.BreakoutScenarios?.FirstOrDefault(br => br.Type.Contains("SELL", StringComparison.OrdinalIgnoreCase) && br.TakeProfits != null && br.TakeProfits.Any() && currentPrice <= br.TakeProfits.Min());
+
+                        if (hitFullTpBuy != null)
+                        {
+                            shouldTriggerAi = true;
+                            triggerReason = $"🎉 TUYỆT VỜI! Giá ({currentPrice}) đã lấp đầy toàn bộ TP ({hitFullTpBuy.TakeProfits.Max()}) của kịch bản MUA [{hitFullTpBuy.ZoneName}]. Bắt đầu lấy Plan mới...";
+                        }
+                        else if (hitFullTpSell != null)
+                        {
+                            shouldTriggerAi = true;
+                            triggerReason = $"🎉 TUYỆT VỜI! Giá ({currentPrice}) đã lấp đầy toàn bộ TP ({hitFullTpSell.TakeProfits.Min()}) của kịch bản BÁN [{hitFullTpSell.ZoneName}]. Bắt đầu lấy Plan mới...";
+                        }
+                        else if (hitFullTpBreakoutBuy != null)
+                        {
+                            shouldTriggerAi = true;
+                            triggerReason = $"🎉 TUYỆT VỜI! Giá ({currentPrice}) đã lấp đầy toàn bộ TP ({hitFullTpBreakoutBuy.TakeProfits.Max()}) của kịch bản BREAKOUT BUY. Bắt đầu lấy Plan mới...";
+                        }
+                        else if (hitFullTpBreakoutSell != null)
+                        {
+                            shouldTriggerAi = true;
+                            triggerReason = $"🎉 TUYỆT VỜI! Giá ({currentPrice}) đã lấp đầy toàn bộ TP ({hitFullTpBreakoutSell.TakeProfits.Min()}) của kịch bản BREAKOUT SELL. Bắt đầu lấy Plan mới...";
+                        }
                     }
                 }
             }
@@ -233,7 +275,7 @@ public class MarketDataController : ControllerBase
                 await _notificationService.SendMessageAsync($"🚨 *CẬP NHẬT KHẨN CẤP:* {triggerReason}");
                 
                 // Đẩy vào Hangfire để gọi lại AI
-                _backgroundJobClient.Enqueue<IAiNotificationJob>(job => job.GenerateAndNotifyPlanAsync(request.Symbol, analysisResults));
+                _backgroundJobClient.Enqueue<IAiNotificationJob>(job => job.GenerateAndNotifyPlanAsync(request.Symbol, analysisResults, triggerReason));
             }
 
             return Ok(new 

@@ -12,7 +12,7 @@ namespace TradingIntelligenceEngine.Api.Jobs;
 
 public interface IAiNotificationJob
 {
-    Task GenerateAndNotifyPlanAsync(string symbol, Dictionary<string, MarketState> analysisResults);
+    Task GenerateAndNotifyPlanAsync(string symbol, Dictionary<string, MarketState> analysisResults, string triggerReason = "");
 }
 
 public class AiNotificationJob : IAiNotificationJob
@@ -34,14 +34,17 @@ public class AiNotificationJob : IAiNotificationJob
         _logger = logger;
     }
 
-    public async Task GenerateAndNotifyPlanAsync(string symbol, Dictionary<string, MarketState> analysisResults)
+    public async Task GenerateAndNotifyPlanAsync(string symbol, Dictionary<string, MarketState> analysisResults, string triggerReason = "")
     {
         try
         {
             _logger.LogInformation("Hangfire Job: Bắt đầu gọi AI Strategist cho {Symbol}...", symbol);
             
+            // Lấy kế hoạch cũ để làm Context cho AI (tránh lặp lại lỗi)
+            var previousPlan = await _marketDataStore.GetLatestPlanAsync(symbol);
+
             // Hangfire doesn't pass a live CancellationToken out of the box unless injected, using CancellationToken.None
-            var tradingPlan = await _aiStrategist.GeneratePlanAsync(symbol, analysisResults, CancellationToken.None);
+            var tradingPlan = await _aiStrategist.GeneratePlanAsync(symbol, analysisResults, previousPlan, triggerReason, CancellationToken.None);
             
             var planMsgBuilder = new System.Text.StringBuilder();
             planMsgBuilder.AppendLine($"🚨 *KẾ HOẠCH GIAO DỊCH {symbol} (AI STRATEGIST)* 🚨\n");
