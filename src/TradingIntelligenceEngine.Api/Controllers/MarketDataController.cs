@@ -36,6 +36,52 @@ public class MarketDataController : ControllerBase
         _logger = logger;
     }
 
+    [HttpGet("{symbol}")]
+    public async Task<IActionResult> GetState(string symbol, [FromQuery] bool includeCandles = false)
+    {
+        try
+        {
+            var state = await _marketDataStore.GetLatestStateAsync(symbol);
+            if (state == null || !state.Any())
+            {
+                return NotFound(new { success = false, message = "Chưa có dữ liệu cho Symbol này. Vui lòng gọi /initialize trước." });
+            }
+
+            var plan = await _marketDataStore.GetLatestPlanAsync(symbol);
+            
+            var latestCandles = new Dictionary<string, RawCandleDto>();
+            var allCandles = new Dictionary<string, List<RawCandleDto>>();
+
+            foreach (var tf in state.Keys)
+            {
+                var tfCandles = await _marketDataStore.GetCandlesAsync(symbol, tf);
+                if (tfCandles.Any())
+                {
+                    latestCandles.Add(tf, tfCandles.Last());
+                    if (includeCandles)
+                    {
+                        allCandles.Add(tf, tfCandles);
+                    }
+                }
+            }
+
+            return Ok(new 
+            {
+                success = true,
+                symbol = symbol,
+                market_structure = state,
+                latest_plan = plan,
+                latest_candles = latestCandles,
+                candles_data = includeCandles ? allCandles : null
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Lỗi hệ thống khi lấy trạng thái Market Data.");
+            return StatusCode(500, new { success = false, message = "Đã xảy ra lỗi nội bộ." });
+        }
+    }
+
     [HttpPost("initialize")]
     public async Task<IActionResult> Initialize([FromBody] MarketDataInitializeRequest request)
     {
