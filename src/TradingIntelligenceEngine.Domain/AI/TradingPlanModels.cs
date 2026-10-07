@@ -32,7 +32,10 @@ public record TradingPlanResponse(
     List<TradingZone> BuyScenarios,
     List<TradingZone> SellScenarios,
     List<BreakoutScenario> BreakoutScenarios
-);
+)
+{
+    public long CreatedAt { get; set; } = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+}
 
 public interface ITradingStrategistEngine
 {

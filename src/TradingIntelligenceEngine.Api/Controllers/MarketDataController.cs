@@ -250,7 +250,7 @@ public class MarketDataController : ControllerBase
 
             if (latestPlan != null)
             {
-                // TÍNH TOÁN HIGH/LOW TỪ KHUNG THỜI GIAN NHỎ NHẤT (Để tránh lấy râu nến quá khứ của khung H1/H4)
+                // TÍNH TOÁN HIGH/LOW TỪ KHUNG THỜI GIAN NHỎ NHẤT (Để bắt các râu nến quét SL/TP)
                 var smallestTfKey = request.Timeframes.Keys
                     .OrderBy(k => Enum.TryParse<Timeframe>(k, true, out var tf) ? (int)tf : 99)
                     .FirstOrDefault();
@@ -274,14 +274,19 @@ public class MarketDataController : ControllerBase
                 }
                 
                 bool planUpdated = false;
+                var justActivatedZones = new HashSet<string>();
 
-                // 1. Cập nhật trạng thái IsActive (Đã cắn Entry chưa?)
+                // 1. Cập nhật trạng thái IsActive (Sử dụng CurrentPrice - Giá hiện hành để loại bỏ râu nến ảo trong quá khứ)
                 if (latestPlan.BuyScenarios != null)
                 {
                     foreach (var b in latestPlan.BuyScenarios)
                     {
-                        if (!b.IsActive && minLow <= b.EntryTop)
-                        { b.IsActive = true; planUpdated = true; }
+                        if (!b.IsActive && currentPrice <= b.EntryTop)
+                        { 
+                            b.IsActive = true; 
+                            planUpdated = true; 
+                            justActivatedZones.Add(b.ZoneName); 
+                        }
                     }
                 }
                 
@@ -289,8 +294,12 @@ public class MarketDataController : ControllerBase
                 {
                     foreach (var s in latestPlan.SellScenarios)
                     {
-                        if (!s.IsActive && maxHigh >= s.EntryBottom)
-                        { s.IsActive = true; planUpdated = true; }
+                        if (!s.IsActive && currentPrice >= s.EntryBottom)
+                        { 
+                            s.IsActive = true; 
+                            planUpdated = true; 
+                            justActivatedZones.Add(s.ZoneName);
+                        }
                     }
                 }
 
@@ -300,10 +309,18 @@ public class MarketDataController : ControllerBase
                     {
                         if (!br.IsActive)
                         {
-                            if (br.Type.Contains("BUY", StringComparison.OrdinalIgnoreCase) && maxHigh >= br.TriggerPrice)
-                            { br.IsActive = true; planUpdated = true; }
-                            else if (br.Type.Contains("SELL", StringComparison.OrdinalIgnoreCase) && minLow <= br.TriggerPrice)
-                            { br.IsActive = true; planUpdated = true; }
+                            if (br.Type.Contains("BUY", StringComparison.OrdinalIgnoreCase) && currentPrice >= br.TriggerPrice)
+                            { 
+                                br.IsActive = true; 
+                                planUpdated = true; 
+                                justActivatedZones.Add(br.Type);
+                            }
+                            else if (br.Type.Contains("SELL", StringComparison.OrdinalIgnoreCase) && currentPrice <= br.TriggerPrice)
+                            { 
+                                br.IsActive = true; 
+                                planUpdated = true; 
+                                justActivatedZones.Add(br.Type);
+                            }
                         }
                     }
                 }
@@ -325,12 +342,15 @@ public class MarketDataController : ControllerBase
                 // TH2: Giá hiện tại đã cắn Stop Loss của các kịch bản ĐANG ACTIVE (Invalidation)
                 if (currentPrice > 0)
                 {
-                    var hitSell = latestPlan.SellScenarios?.FirstOrDefault(s => s.IsActive && maxHigh >= s.StopLoss);
-                    var hitBuy = latestPlan.BuyScenarios?.FirstOrDefault(b => b.IsActive && minLow <= b.StopLoss);
+                    // LƯU Ý LOGIC: 
+                    // Nếu kịch bản VỪA MỚI kích hoạt ở tick này, chỉ dùng CurrentPrice để check SL (tránh râu nến ảo quá khứ).
+                    // Nếu kịch bản ĐÃ kích hoạt từ trước, được phép dùng maxHigh/minLow để bắt râu nến quét SL.
+                    var hitSell = latestPlan.SellScenarios?.FirstOrDefault(s => s.IsActive && (justActivatedZones.Contains(s.ZoneName) ? currentPrice >= s.StopLoss : maxHigh >= s.StopLoss));
+                    var hitBuy = latestPlan.BuyScenarios?.FirstOrDefault(b => b.IsActive && (justActivatedZones.Contains(b.ZoneName) ? currentPrice <= b.StopLoss : minLow <= b.StopLoss));
                     var hitBreakout = latestPlan.BreakoutScenarios?.FirstOrDefault(br => 
                         br.IsActive && (
-                            (br.Type.Contains("BUY", StringComparison.OrdinalIgnoreCase) && minLow <= br.StopLoss) || 
-                            (br.Type.Contains("SELL", StringComparison.OrdinalIgnoreCase) && maxHigh >= br.StopLoss)
+                            (br.Type.Contains("BUY", StringComparison.OrdinalIgnoreCase) && (justActivatedZones.Contains(br.Type) ? currentPrice <= br.StopLoss : minLow <= br.StopLoss)) || 
+                            (br.Type.Contains("SELL", StringComparison.OrdinalIgnoreCase) && (justActivatedZones.Contains(br.Type) ? currentPrice >= br.StopLoss : maxHigh >= br.StopLoss))
                         ));
                     
                     if (hitSell != null)
@@ -352,10 +372,10 @@ public class MarketDataController : ControllerBase
                     else
                     {
                         // TH3: Giá hiện tại đã đạt Full TP (Take Profit cuối cùng) của một kịch bản ĐANG ACTIVE
-                        var hitFullTpBuy = latestPlan.BuyScenarios?.FirstOrDefault(b => b.IsActive && b.TakeProfits != null && b.TakeProfits.Any() && maxHigh >= b.TakeProfits.Max());
-                        var hitFullTpSell = latestPlan.SellScenarios?.FirstOrDefault(s => s.IsActive && s.TakeProfits != null && s.TakeProfits.Any() && minLow <= s.TakeProfits.Min());
-                        var hitFullTpBreakoutBuy = latestPlan.BreakoutScenarios?.FirstOrDefault(br => br.IsActive && br.Type.Contains("BUY", StringComparison.OrdinalIgnoreCase) && br.TakeProfits != null && br.TakeProfits.Any() && maxHigh >= br.TakeProfits.Max());
-                        var hitFullTpBreakoutSell = latestPlan.BreakoutScenarios?.FirstOrDefault(br => br.IsActive && br.Type.Contains("SELL", StringComparison.OrdinalIgnoreCase) && br.TakeProfits != null && br.TakeProfits.Any() && minLow <= br.TakeProfits.Min());
+                        var hitFullTpBuy = latestPlan.BuyScenarios?.FirstOrDefault(b => b.IsActive && b.TakeProfits != null && b.TakeProfits.Any() && (justActivatedZones.Contains(b.ZoneName) ? currentPrice >= b.TakeProfits.Max() : maxHigh >= b.TakeProfits.Max()));
+                        var hitFullTpSell = latestPlan.SellScenarios?.FirstOrDefault(s => s.IsActive && s.TakeProfits != null && s.TakeProfits.Any() && (justActivatedZones.Contains(s.ZoneName) ? currentPrice <= s.TakeProfits.Min() : minLow <= s.TakeProfits.Min()));
+                        var hitFullTpBreakoutBuy = latestPlan.BreakoutScenarios?.FirstOrDefault(br => br.IsActive && br.Type.Contains("BUY", StringComparison.OrdinalIgnoreCase) && br.TakeProfits != null && br.TakeProfits.Any() && (justActivatedZones.Contains(br.Type) ? currentPrice >= br.TakeProfits.Max() : maxHigh >= br.TakeProfits.Max()));
+                        var hitFullTpBreakoutSell = latestPlan.BreakoutScenarios?.FirstOrDefault(br => br.IsActive && br.Type.Contains("SELL", StringComparison.OrdinalIgnoreCase) && br.TakeProfits != null && br.TakeProfits.Any() && (justActivatedZones.Contains(br.Type) ? currentPrice <= br.TakeProfits.Min() : minLow <= br.TakeProfits.Min()));
 
                         if (hitFullTpBuy != null)
                         {
