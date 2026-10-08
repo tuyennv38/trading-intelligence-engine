@@ -276,50 +276,65 @@ public class MarketDataController : ControllerBase
                 bool planUpdated = false;
                 var justActivatedZones = new HashSet<string>();
 
-                // 1. Cập nhật trạng thái IsActive (Sử dụng CurrentPrice - Giá hiện hành để loại bỏ râu nến ảo trong quá khứ)
-                if (latestPlan.BuyScenarios != null)
-                {
-                    foreach (var b in latestPlan.BuyScenarios)
-                    {
-                        if (!b.IsActive && currentPrice <= b.EntryTop)
-                        { 
-                            b.IsActive = true; 
-                            planUpdated = true; 
-                            justActivatedZones.Add(b.ZoneName); 
-                        }
-                    }
-                }
-                
-                if (latestPlan.SellScenarios != null)
-                {
-                    foreach (var s in latestPlan.SellScenarios)
-                    {
-                        if (!s.IsActive && currentPrice >= s.EntryBottom)
-                        { 
-                            s.IsActive = true; 
-                            planUpdated = true; 
-                            justActivatedZones.Add(s.ZoneName);
-                        }
-                    }
-                }
+                // Kiểm tra xem hiện tại CÓ KỊCH BẢN NÀO ĐANG CHẠY (ĐÃ KHỚP) CHƯA?
+                bool isAnyScenarioActive = 
+                    (latestPlan.BuyScenarios?.Any(b => b.IsActive) == true) ||
+                    (latestPlan.SellScenarios?.Any(s => s.IsActive) == true) ||
+                    (latestPlan.BreakoutScenarios?.Any(br => br.IsActive) == true);
 
-                if (latestPlan.BreakoutScenarios != null)
+                // 1. Cập nhật trạng thái IsActive 
+                // LOGIC QUAN TRỌNG (One-Cancels-Other): CHỈ khớp lệnh mới nếu CHƯA CÓ lệnh nào đang chạy.
+                // Nếu đã có 1 lệnh Buy đang chạy, thì bỏ qua không kiểm tra điểm vào của lệnh Sell/Breakout nữa, tránh xung đột.
+                if (!isAnyScenarioActive)
                 {
-                    foreach (var br in latestPlan.BreakoutScenarios)
+                    if (latestPlan.BuyScenarios != null)
                     {
-                        if (!br.IsActive)
+                        foreach (var b in latestPlan.BuyScenarios)
                         {
-                            if (br.Type.Contains("BUY", StringComparison.OrdinalIgnoreCase) && currentPrice >= br.TriggerPrice)
+                            if (!isAnyScenarioActive && currentPrice <= b.EntryTop)
                             { 
-                                br.IsActive = true; 
+                                b.IsActive = true; 
                                 planUpdated = true; 
-                                justActivatedZones.Add(br.Type);
+                                justActivatedZones.Add(b.ZoneName); 
+                                isAnyScenarioActive = true;
                             }
-                            else if (br.Type.Contains("SELL", StringComparison.OrdinalIgnoreCase) && currentPrice <= br.TriggerPrice)
+                        }
+                    }
+                    
+                    if (latestPlan.SellScenarios != null)
+                    {
+                        foreach (var s in latestPlan.SellScenarios)
+                        {
+                            if (!isAnyScenarioActive && currentPrice >= s.EntryBottom)
                             { 
-                                br.IsActive = true; 
+                                s.IsActive = true; 
                                 planUpdated = true; 
-                                justActivatedZones.Add(br.Type);
+                                justActivatedZones.Add(s.ZoneName);
+                                isAnyScenarioActive = true;
+                            }
+                        }
+                    }
+
+                    if (latestPlan.BreakoutScenarios != null)
+                    {
+                        foreach (var br in latestPlan.BreakoutScenarios)
+                        {
+                            if (!isAnyScenarioActive)
+                            {
+                                if (br.Type.Contains("BUY", StringComparison.OrdinalIgnoreCase) && currentPrice >= br.TriggerPrice)
+                                { 
+                                    br.IsActive = true; 
+                                    planUpdated = true; 
+                                    justActivatedZones.Add(br.Type);
+                                    isAnyScenarioActive = true;
+                                }
+                                else if (br.Type.Contains("SELL", StringComparison.OrdinalIgnoreCase) && currentPrice <= br.TriggerPrice)
+                                { 
+                                    br.IsActive = true; 
+                                    planUpdated = true; 
+                                    justActivatedZones.Add(br.Type);
+                                    isAnyScenarioActive = true;
+                                }
                             }
                         }
                     }
