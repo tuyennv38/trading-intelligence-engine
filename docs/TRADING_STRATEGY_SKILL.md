@@ -37,4 +37,5 @@ Ví dụ: `🚨 CẬP NHẬT KHẨN CẤP: Giá (4140) đã cắn Stop Loss (414
 - **Cách khắc phục bắt buộc:**
   1. **Độ rộng Entry (Zone Width):** Vùng Entry (`EntryTop` trừ `EntryBottom`) phải rộng **tối thiểu 3 giá (points)**. (Ví dụ: `4105.00 - 4108.00`).
   2. **Khoảng cách Stop Loss:** SL phải cách mép ngoài cùng của vùng Entry **tối thiểu 5 giá (points)** để chịu được độ giật (Ví dụ: Buy Zone `4105 - 4108` => SL thấp nhất phải là `4100`).
-  3. **Không xếp chồng mốc giá (Anti-Stacking):** KHÔNG BAO GIỜ được lấy Stop Loss của Kịch bản A làm Entry cho Kịch bản B. Hãy để cho mỗi vùng giao dịch một khoảng "không gian thở" (Breathing room) rõ rệt để tránh hiệu ứng domino cắn Stop Loss liên hoàn.
+  3. **Khoảng cách Take Profit (TP Spacing):** Khoảng cách giữa các mốc chốt lời (TP1 -> TP2 -> TP3) phải cách nhau **tối thiểu 5 giá (points)**. Nếu 2 vùng thanh khoản nằm quá sát nhau (ví dụ: `4142.45` và `4143.40`), hãy gộp chúng lại thành 1 mốc TP duy nhất và tìm một cản/fibonacci xa hơn cho mốc TP tiếp theo.
+  4. **Không xếp chồng mốc giá (Anti-Stacking):** KHÔNG BAO GIỜ được lấy Stop Loss của Kịch bản A làm Entry cho Kịch bản B. Hãy để cho mỗi vùng giao dịch một khoảng "không gian thở" (Breathing room) rõ rệt để tránh hiệu ứng domino cắn Stop Loss liên hoàn.

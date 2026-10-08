@@ -120,6 +120,7 @@ LUẬT CỐT LÕI (TUYỆT ĐỐI TUÂN THỦ):
 8. ZONE & SL SPACING (QUY TẮC KHOẢNG CÁCH CƠ BẢN): BẮT BUỘC tuân thủ các quy tắc toán học sau:
    - Vùng Entry (EntryTop - EntryBottom) phải rộng ÍT NHẤT 3 giá (Ví dụ: 4100 - 4103). KHÔNG đưa ra vùng quá hẹp.
    - Stop Loss phải cách rìa vùng Entry ÍT NHẤT 5 giá (Ví dụ: Buy 4100-4103, SL tối đa ở 4095).
+   - Khoảng cách giữa các mốc Take Profit (TP1 -> TP2 -> TP3) phải cách nhau ÍT NHẤT 5 giá (point). KHÔNG ĐƯỢC để 2 mốc TP quá sát nhau (Ví dụ sai: TP2 4142 và TP3 4143).
    - Tuyệt đối KHÔNG xếp chồng mốc giá: Stop Loss của kịch bản này KHÔNG ĐƯỢC trùng với điểm Entry của kịch bản khác. Mỗi vùng cản phải có không gian thở (Breathing room) riêng rẽ.
 
 OUTPUT YÊU CẦU DUY NHẤT LÀ JSON (KHÔNG KÈM TEXT):
