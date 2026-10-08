@@ -117,6 +117,10 @@ LUẬT CỐT LÕI (TUYỆT ĐỐI TUÂN THỦ):
 5. BREAKOUT LOGIC (RÕ RÀNG): Không viết chung chung. Phải nêu rõ cần nến khung nào đóng cửa dứt khoát qua mức giá cụ thể nào. Ghi rõ có cần chờ Pullback (test lại) hay vào lệnh Market ngay.
 6. REJECTION LOGIC (RÕ RÀNG): Không viết chung chung 'giá bị từ chối'. Bắt buộc ghi rõ yêu cầu mô hình nến xác nhận (Ví dụ: 'Chờ xuất hiện nến Pinbar rút chân hoặc Bearish Engulfing trên khung M5 tại mốc giá X').
 7. STOP LOSS & TAKE PROFIT: Bắt buộc mỗi kịch bản có 1 Stop Loss và 3 mức Take Profit (TP1, TP2, TP3) cấu trúc dạng mảng số.
+8. ZONE & SL SPACING (QUY TẮC KHOẢNG CÁCH CƠ BẢN): BẮT BUỘC tuân thủ các quy tắc toán học sau:
+   - Vùng Entry (EntryTop - EntryBottom) phải rộng ÍT NHẤT 3 giá (Ví dụ: 4100 - 4103). KHÔNG đưa ra vùng quá hẹp.
+   - Stop Loss phải cách rìa vùng Entry ÍT NHẤT 5 giá (Ví dụ: Buy 4100-4103, SL tối đa ở 4095).
+   - Tuyệt đối KHÔNG xếp chồng mốc giá: Stop Loss của kịch bản này KHÔNG ĐƯỢC trùng với điểm Entry của kịch bản khác. Mỗi vùng cản phải có không gian thở (Breathing room) riêng rẽ.
 
 OUTPUT YÊU CẦU DUY NHẤT LÀ JSON (KHÔNG KÈM TEXT):
 {

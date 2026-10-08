@@ -31,3 +31,10 @@ File này định nghĩa các quy tắc vàng (Golden Rules) để tránh các l
 Hệ thống C# (MarketDataController) đã được lập trình để tự động bắt lỗi cắn Stop Loss và in ra thông báo rõ ràng.
 Ví dụ: `🚨 CẬP NHẬT KHẨN CẤP: Giá (4140) đã cắn Stop Loss (4141) của kịch bản MUA [M15/M5 Aggressive Pullback Support]. Đang tính toán lại...`
 => Từ đó, AI ở lượt chạy tiếp theo phải biết rằng vùng MUA đó đã thủng (Failed), không được phép xúi người dùng mua lại ở vùng đó nữa.
+
+## 6. QUY TẮC CẤU TRÚC KỊCH BẢN (Zone & SL Spacing)
+- **Lỗi thường gặp:** AI thường đưa ra các vùng Entry quá hẹp (ví dụ: `4108.65 - 4108.99` - chênh nhau có 0.3 giá), hoặc đặt Stop Loss quá sát, hoặc Stop Loss của kịch bản 1 lại chính là Entry của kịch bản 2. Điều này dẫn đến nhiễu (Noise) cực lớn khi giá giật (Whipsaw).
+- **Cách khắc phục bắt buộc:**
+  1. **Độ rộng Entry (Zone Width):** Vùng Entry (`EntryTop` trừ `EntryBottom`) phải rộng **tối thiểu 3 giá (points)**. (Ví dụ: `4105.00 - 4108.00`).
+  2. **Khoảng cách Stop Loss:** SL phải cách mép ngoài cùng của vùng Entry **tối thiểu 5 giá (points)** để chịu được độ giật (Ví dụ: Buy Zone `4105 - 4108` => SL thấp nhất phải là `4100`).
+  3. **Không xếp chồng mốc giá (Anti-Stacking):** KHÔNG BAO GIỜ được lấy Stop Loss của Kịch bản A làm Entry cho Kịch bản B. Hãy để cho mỗi vùng giao dịch một khoảng "không gian thở" (Breathing room) rõ rệt để tránh hiệu ứng domino cắn Stop Loss liên hoàn.
