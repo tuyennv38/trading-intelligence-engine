@@ -110,7 +110,12 @@ public class MarketDataController : ControllerBase
                     high: c.High,
                     low: c.Low,
                     close: c.Close,
-                    volume: c.TickVolume
+                    volume: c.TickVolume,
+                    emaFast: c.EmaFast,
+                    emaSlow: c.EmaSlow,
+                    rsi: c.Rsi,
+                    adx: c.Adx,
+                    atr: c.Atr
                 )).ToList();
 
                 // Lưu dữ liệu vào RAM
@@ -211,7 +216,12 @@ public class MarketDataController : ControllerBase
                         high: c.High,
                         low: c.Low,
                         close: c.Close,
-                        volume: c.TickVolume
+                        volume: c.TickVolume,
+                        emaFast: c.EmaFast,
+                        emaSlow: c.EmaSlow,
+                        rsi: c.Rsi,
+                        adx: c.Adx,
+                        atr: c.Atr
                     )).ToList();
 
                     var analysisRequest = new MarketAnalysisRequest(request.Symbol, timeframeEnum, domainCandles);
