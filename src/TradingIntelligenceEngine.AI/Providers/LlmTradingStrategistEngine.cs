@@ -110,7 +110,7 @@ public class LlmTradingStrategistEngine : ITradingStrategistEngine
 Nhiệm vụ của bạn là nhận dữ liệu Cấu trúc thị trường và Volume Profile từ thuật toán Quant, sau đó viết ra một Kế hoạch Giao dịch (Trading Plan) hoàn chỉnh.
 
 LUẬT CỐT LÕI (TUYỆT ĐỐI TUÂN THỦ):
-1. ZERO HALLUCINATION: Tuyệt đối KHÔNG tự bịa ra các mốc giá. Chỉ được dùng các mốc giá dựa trên dữ liệu hệ thống cung cấp.
+1. ZERO HALLUCINATION: Tuyệt đối KHÔNG tự làm tròn (round) hay bịa ra các mốc giá. Bắt buộc phải dùng chính xác các con số (có phần thập phân) lấy từ các mức 'Sự kiện phá vỡ' và 'Mức thanh khoản' do hệ thống cung cấp để thiết lập Entry, Stop Loss và toàn bộ các mốc Take Profit (TP1, TP2, TP3). Không được dùng các số chẵn tự chế cho TP.
 2. NO TRADE RULE: Nếu thị trường đi ngang biên độ hẹp hoặc không có xu hướng rõ ràng, trả về kịch bản KHÔNG GIAO DỊCH (Danh sách Buy/Sell/Breakout rỗng).
 3. MULTI-TIMEFRAME LOGIC: Nhận diện khung lớn nhất làm 'Trend Chính', và khung nhỏ nhất làm 'Khung canh Entry'.
 4. CONTRADICTION AVOIDANCE (TRÁNH HEDGING/XUNG ĐỘT): Cấm tuyệt đối tạo kịch bản Limit và Breakout ngược chiều đè lên nhau. Ví dụ: Nếu có lệnh BÁN vùng 4123-4127 (SL 4131), thì TUYỆT ĐỐI KHÔNG cài Breakout MUA ở 4127. (Vì nếu giá lên 4127.5, User sẽ vừa kích hoạt Mua vừa bị gồng lỗ Bán, cực kỳ vô lý). Hệ thống sẽ TỰ ĐỘNG gọi lại bạn nếu lệnh Limit bị cắn SL, do đó KHÔNG CẦN TẠO kịch bản Breakout dự phòng tại cùng 1 cản. Hãy chọn 1 hướng duy nhất cho mỗi vùng giá.
@@ -180,7 +180,7 @@ OUTPUT YÊU CẦU DUY NHẤT LÀ JSON (KHÔNG KÈM TEXT):
             }
         }
 
-        sb.AppendLine("\nDựa vào dữ liệu trên, hãy sinh JSON TradingPlanResponse. Trích xuất Entry Price và Stop Loss từ các mức 'Sự kiện phá vỡ' và 'Mức thanh khoản' ở trên. Nếu có mức giá để làm cản, bắt buộc phải trả về kịch bản.");
+        sb.AppendLine("\nDựa vào dữ liệu trên, hãy sinh JSON TradingPlanResponse. Trích xuất Entry Price, Stop Loss và các mức Take Profit (TP1, TP2, TP3) từ các mức 'Sự kiện phá vỡ' và 'Mức thanh khoản' (các vùng kháng cự / hỗ trợ tiếp theo) ở trên. TUYỆT ĐỐI KHÔNG làm tròn số cho Take Profit, hãy dùng chính xác giá trị thập phân hệ thống cấp. Nếu có mức giá để làm cản, bắt buộc phải trả về kịch bản.");
         return sb.ToString();
     }
 }
