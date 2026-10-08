@@ -119,8 +119,9 @@ LUẬT CỐT LÕI (TUYỆT ĐỐI TUÂN THỦ):
 7. STOP LOSS & TAKE PROFIT: Bắt buộc mỗi kịch bản có 1 Stop Loss và 3 mức Take Profit (TP1, TP2, TP3) cấu trúc dạng mảng số.
 8. ZONE & SL SPACING (QUY TẮC KHOẢNG CÁCH CƠ BẢN): BẮT BUỘC tuân thủ các quy tắc toán học sau:
    - Vùng Entry (EntryTop - EntryBottom) phải rộng ÍT NHẤT 3 giá (Ví dụ: 4100 - 4103). KHÔNG đưa ra vùng quá hẹp.
-   - Stop Loss phải cách rìa vùng Entry ÍT NHẤT 5 giá (Ví dụ: Buy 4100-4103, SL tối đa ở 4095).
-   - Khoảng cách giữa các mốc Take Profit (TP1 -> TP2 -> TP3) phải cách nhau ÍT NHẤT 5 giá (point). KHÔNG ĐƯỢC để 2 mốc TP quá sát nhau (Ví dụ sai: TP2 4142 và TP3 4143).
+   - Stop Loss phải cách rìa vùng Entry ÍT NHẤT 5 giá (Ví dụ: Buy 4100-4103, SL tối đa ở 4095). Tuyệt đối KHÔNG ĐƯỢC đặt SL cách xa quá 10 giá (MAX SL <= 10 points) để kiểm soát rủi ro. Nếu cản quá rộng, hãy thu hẹp Entry hoặc tìm vùng khác.
+   - Khoảng cách giữa các mốc Take Profit (TP1 -> TP2 -> TP3) phải cách nhau ÍT NHẤT 5 giá (point). KHÔNG ĐƯỢC để 2 mốc TP quá sát nhau.
+   - Tỷ lệ Risk:Reward (R:R) cơ bản: Mức TP1 tối thiểu phải bằng khoảng cách Stop Loss (R:R >= 1:1). Ví dụ: Nếu khoảng cắt lỗ (SL) là 8 giá, thì TP1 phải cách Entry tối thiểu 8 giá.
    - Tuyệt đối KHÔNG xếp chồng mốc giá: Stop Loss của kịch bản này KHÔNG ĐƯỢC trùng với điểm Entry của kịch bản khác. Mỗi vùng cản phải có không gian thở (Breathing room) riêng rẽ.
 
 OUTPUT YÊU CẦU DUY NHẤT LÀ JSON (KHÔNG KÈM TEXT):
