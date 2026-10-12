@@ -34,6 +34,7 @@ public record TradingPlanResponse(
     List<BreakoutScenario> BreakoutScenarios
 )
 {
+    public string SignalId { get; set; } = string.Empty;
     public long CreatedAt { get; set; } = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
 }
 

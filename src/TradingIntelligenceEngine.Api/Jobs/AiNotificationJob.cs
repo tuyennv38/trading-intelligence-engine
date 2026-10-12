@@ -45,6 +45,10 @@ public class AiNotificationJob : IAiNotificationJob
 
             // Hangfire doesn't pass a live CancellationToken out of the box unless injected, using CancellationToken.None
             var tradingPlan = await _aiStrategist.GeneratePlanAsync(symbol, analysisResults, previousPlan, triggerReason, CancellationToken.None);
+
+            // Gán ID duy nhất cho mỗi kịch bản mới tạo (EA poll theo ID này)
+            tradingPlan.SignalId = $"{DateTime.UtcNow:yyyyMMddHHmmss}_{symbol.ToUpperInvariant()}";
+            tradingPlan.CreatedAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
             
             var planMsgBuilder = new System.Text.StringBuilder();
             planMsgBuilder.AppendLine($"🚨 *KẾ HOẠCH GIAO DỊCH {symbol} (AI STRATEGIST)* 🚨\n");
