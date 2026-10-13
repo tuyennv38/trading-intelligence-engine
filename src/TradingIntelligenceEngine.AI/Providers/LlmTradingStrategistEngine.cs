@@ -137,7 +137,11 @@ OUTPUT YÊU CẦU DUY NHẤT LÀ JSON (KHÔNG KÈM TEXT):
 }";
     }
 
-    private string BuildPrompt(string symbol, Dictionary<string, MarketState> multiTimeframeStates, TradingPlanResponse? previousPlan, string triggerReason)
+    private string BuildPrompt(
+        string symbol,
+        Dictionary<string, MarketState> multiTimeframeStates,
+        TradingPlanResponse? previousPlan,
+        string triggerReason)
     {
         var sb = new StringBuilder();
         sb.AppendLine($"Hãy lập kế hoạch giao dịch cho cặp {symbol}. Dưới đây là dữ liệu từ hệ thống Quant:");

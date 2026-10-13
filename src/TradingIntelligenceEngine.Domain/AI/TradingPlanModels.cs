@@ -47,3 +47,29 @@ public interface ITradingStrategistEngine
         string triggerReason,
         System.Threading.CancellationToken cancellationToken);
 }
+
+/// <summary>
+/// Nến OHLC đưa vào AI nhận dạng cấu trúc thị trường.
+/// </summary>
+public record AiCandleInput(
+    long Time,
+    decimal Open,
+    decimal High,
+    decimal Low,
+    decimal Close,
+    long TickVolume = 0,
+    decimal? EmaFast = null,
+    decimal? EmaSlow = null,
+    decimal? Rsi = null,
+    decimal? Atr = null,
+    decimal? Adx = null
+);
+
+public interface IAiMarketStructureEngine
+{
+    Task<MarketState.MarketState> AnalyzeStructureAsync(
+        string symbol,
+        string timeframe,
+        IReadOnlyList<AiCandleInput> candles,
+        System.Threading.CancellationToken cancellationToken);
+}

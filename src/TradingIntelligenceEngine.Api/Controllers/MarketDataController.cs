@@ -93,44 +93,83 @@ public class MarketDataController : ControllerBase
         try
         {
             var analysisResults = new Dictionary<string, MarketState>();
+            var candlesByTimeframe = new Dictionary<string, List<AiCandleInput>>();
+            int totalCandles = 0;
 
             foreach (var tfData in request.Timeframes)
             {
-                // Parse Timeframe Enum
                 if (!Enum.TryParse<Timeframe>(tfData.Key, true, out var timeframeEnum))
                 {
                     _logger.LogWarning("Timeframe {Timeframe} không hợp lệ, bỏ qua.", tfData.Key);
                     continue;
                 }
 
-                // Map DTO to Domain Models
-                var domainCandles = tfData.Value.Select(c => new Candle(
-                    time: DateTimeOffset.FromUnixTimeSeconds(c.Time),
-                    open: c.Open,
-                    high: c.High,
-                    low: c.Low,
-                    close: c.Close,
-                    volume: c.TickVolume,
-                    emaFast: c.EmaFast,
-                    emaSlow: c.EmaSlow,
-                    rsi: c.Rsi,
-                    adx: c.Adx,
-                    atr: c.Atr
-                )).ToList();
+                if (tfData.Value == null || tfData.Value.Count == 0)
+                    continue;
 
-                // Lưu dữ liệu vào RAM
                 await _marketDataStore.InitializeCandlesAsync(request.Symbol, tfData.Key, tfData.Value);
+                totalCandles += tfData.Value.Count;
 
-                // Run the core Quant Algorithm (Phase 1)
-                var analysisRequest = new MarketAnalysisRequest(request.Symbol, timeframeEnum, domainCandles);
-                var marketState = _marketAnalyzer.Analyze(analysisRequest);
-                
-                analysisResults.Add(tfData.Key, marketState);
+                candlesByTimeframe[tfData.Key] = tfData.Value.Select(c => new AiCandleInput(
+                    c.Time, c.Open, c.High, c.Low, c.Close, c.TickVolume,
+                    c.EmaFast, c.EmaSlow, c.Rsi, c.Atr, c.Adx)).ToList();
+
+                if (!request.UseAiStructure)
+                {
+                    var domainCandles = tfData.Value.Select(c => new Candle(
+                        time: DateTimeOffset.FromUnixTimeSeconds(c.Time),
+                        open: c.Open,
+                        high: c.High,
+                        low: c.Low,
+                        close: c.Close,
+                        volume: c.TickVolume,
+                        emaFast: c.EmaFast,
+                        emaSlow: c.EmaSlow,
+                        rsi: c.Rsi,
+                        adx: c.Adx,
+                        atr: c.Atr
+                    )).ToList();
+
+                    var analysisRequest = new MarketAnalysisRequest(request.Symbol, timeframeEnum, domainCandles);
+                    analysisResults.Add(tfData.Key, _marketAnalyzer.Analyze(analysisRequest));
+                }
             }
 
-            int totalCandles = request.Timeframes.Sum(tf => tf.Value.Count);
-            
-            // Xây dựng nội dung tin nhắn dễ đọc gửi lên Google Chat
+            if (candlesByTimeframe.Count == 0)
+            {
+                return BadRequest(new { success = false, message = "Không có timeframe hợp lệ nào." });
+            }
+
+            if (request.UseAiStructure)
+            {
+                _logger.LogInformation(
+                    "Initialize {Symbol} useAiStructure=true. Tổng nến: {TotalCandles}. Queue AI structure → strategist.",
+                    request.Symbol, totalCandles);
+
+                await _notificationService.SendMessageAsync(
+                    $"🚀 *[AI TRADING STRATEGIST]*\n" +
+                    $"📊 *Cặp:* {request.Symbol}\n" +
+                    $"🧠 Mode: *AI nhận dạng cấu trúc* (useAiStructure=true)\n" +
+                    $"⏳ Đang đưa vào hàng đợi: AI Structure → AI Strategist...");
+
+                _backgroundJobClient.Enqueue<IAiNotificationJob>(job =>
+                    job.GenerateAndNotifyPlanAsync(
+                        request.Symbol,
+                        null,
+                        "Khởi tạo dữ liệu ban đầu (AI structure)",
+                        true,
+                        candlesByTimeframe));
+
+                return Ok(new
+                {
+                    success = true,
+                    useAiStructure = true,
+                    message = "Đã đưa vào hàng đợi: AI nhận dạng cấu trúc rồi lập kịch bản (Hangfire).",
+                    timeframes = candlesByTimeframe.Keys.ToList(),
+                    totalCandles
+                });
+            }
+
             var msgBuilder = new System.Text.StringBuilder();
             msgBuilder.AppendLine("🚀 *[AI TRADING STRATEGIST]*");
             msgBuilder.AppendLine("Đã hoàn thành quét Cấu Trúc Thị Trường (Giai đoạn 1)!\n");
@@ -140,10 +179,8 @@ public class MarketDataController : ControllerBase
             {
                 var tf = kvp.Key;
                 var state = kvp.Value;
-                
+
                 string trend = state.Trend?.Direction.ToString() == "Bullish" ? "🟢 Tăng (Bullish)" : "🔴 Giảm (Bearish)";
-                
-                // Dịch các nhãn cấu trúc sang tiếng Việt cho dễ hiểu
                 string structureStr = state.Structure?.LastLabel.ToString() switch
                 {
                     "HH" => "Tạo Đỉnh cao dần (Higher High)",
@@ -162,17 +199,21 @@ public class MarketDataController : ControllerBase
 
             msgBuilder.AppendLine("⏳ *Đang chuyển dữ liệu cho AI (Giai đoạn 2) để lên Kịch bản chi tiết...*");
 
-            string message = msgBuilder.ToString();
             _logger.LogInformation("Phân tích thành công {Symbol}. Tổng nến: {TotalCandles}", request.Symbol, totalCandles);
-            await _notificationService.SendMessageAsync(message);
+            await _notificationService.SendMessageAsync(msgBuilder.ToString());
 
-            // GIAI ĐOẠN 2: Gọi AI Lên Kịch Bản thông qua HANGFIRE (Background Job)
-            _backgroundJobClient.Enqueue<IAiNotificationJob>(job => job.GenerateAndNotifyPlanAsync(request.Symbol, analysisResults, "Khởi tạo dữ liệu ban đầu"));
+            _backgroundJobClient.Enqueue<IAiNotificationJob>(job =>
+                job.GenerateAndNotifyPlanAsync(
+                    request.Symbol,
+                    analysisResults,
+                    "Khởi tạo dữ liệu ban đầu",
+                    false,
+                    null));
 
-            // Trả về response ngay lập tức cho EA/Postman mà không cần chờ AI
-            return Ok(new 
-            { 
-                success = true, 
+            return Ok(new
+            {
+                success = true,
+                useAiStructure = false,
                 message = "Phân tích cấu trúc thành công. Kế hoạch giao dịch đã được đưa vào hàng đợi Hangfire (Background Job).",
                 analysis = analysisResults
             });
@@ -432,7 +473,8 @@ public class MarketDataController : ControllerBase
                 await _notificationService.SendMessageAsync($"🚨 *CẬP NHẬT KHẨN CẤP:* {triggerReason}");
                 
                 // Đẩy vào Hangfire để gọi lại AI
-                _backgroundJobClient.Enqueue<IAiNotificationJob>(job => job.GenerateAndNotifyPlanAsync(request.Symbol, analysisResults, triggerReason));
+                _backgroundJobClient.Enqueue<IAiNotificationJob>(job =>
+                    job.GenerateAndNotifyPlanAsync(request.Symbol, analysisResults, triggerReason, false, null));
             }
 
             return Ok(new 

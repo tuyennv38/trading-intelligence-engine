@@ -95,6 +95,7 @@ builder.Services.AddTransient<IBacktestEngine, BacktestEngine>();
 
 builder.Services.AddHttpClient<IAiDecisionEngine, LlmDecisionEngine>();
 builder.Services.AddHttpClient<ITradingStrategistEngine, LlmTradingStrategistEngine>();
+builder.Services.AddHttpClient<IAiMarketStructureEngine, LlmMarketStructureEngine>();
 
 // 3. Register Notification Service
 var notificationProvider = builder.Configuration["Notification:Provider"];
