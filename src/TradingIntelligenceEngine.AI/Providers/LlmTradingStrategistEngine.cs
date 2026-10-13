@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text;
@@ -14,6 +15,12 @@ namespace TradingIntelligenceEngine.AI.Providers;
 
 public class LlmTradingStrategistEngine : ITradingStrategistEngine
 {
+    private static readonly JsonSerializerOptions PlanJsonOptions = new()
+    {
+        PropertyNameCaseInsensitive = true,
+        PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower
+    };
+
     private readonly HttpClient _httpClient;
     private readonly AiProviderOptions _options;
 
@@ -68,73 +75,105 @@ public class LlmTradingStrategistEngine : ITradingStrategistEngine
         }
 
         var responseJson = await response.Content.ReadAsStringAsync(cancellationToken);
-        
+
         try
         {
-            using var document = JsonDocument.Parse(responseJson);
-            var messageContent = document.RootElement
-                .GetProperty("choices")[0]
-                .GetProperty("message")
-                .GetProperty("content")
-                .GetString();
-
+            var messageContent = AiJsonResponseHelper.ExtractAssistantText(responseJson);
             if (string.IsNullOrWhiteSpace(messageContent))
-                throw new Exception("Empty AI response.");
+                throw new Exception($"Empty AI response. Raw: {AiJsonResponseHelper.Preview(responseJson)}");
 
-            // Clean up Markdown JSON block
-            messageContent = messageContent.Trim();
-            if (messageContent.StartsWith("```json"))
-                messageContent = messageContent.Substring(7);
-            if (messageContent.StartsWith("```"))
-                messageContent = messageContent.Substring(3);
-            if (messageContent.EndsWith("```"))
-                messageContent = messageContent.Substring(0, messageContent.Length - 3);
+            var json = AiJsonResponseHelper.ExtractJsonObject(messageContent);
+            if (string.IsNullOrWhiteSpace(json) || json[0] != '{')
+                throw new Exception($"AI strategist did not return JSON. Preview: {AiJsonResponseHelper.Preview(messageContent)}");
 
-            var plan = JsonSerializer.Deserialize<TradingPlanResponse>(messageContent.Trim(), new JsonSerializerOptions
+            var plan = JsonSerializer.Deserialize<TradingPlanResponse>(json, PlanJsonOptions);
+            if (plan == null)
+                throw new Exception("Failed to deserialize AI Trading Plan.");
+
+            if (string.IsNullOrWhiteSpace(plan.Symbol))
+                plan.Symbol = symbol;
+
+            plan.Scenarios ??= new List<EaTradeScenario>();
+            foreach (var s in plan.Scenarios)
             {
-                PropertyNameCaseInsensitive = true
-            });
-
-            if (plan == null) throw new Exception("Failed to deserialize AI Trading Plan.");
-
-            // TODO: Validate AI hallucination (Compare Plan Zones against original MarketState Prices here)
+                if (string.IsNullOrWhiteSpace(s.Status))
+                    s.Status = EaScenarioStatus.Pending;
+                s.TakeProfits ??= new List<decimal>();
+                if (s.Confirmation != null)
+                    s.Confirmation.Patterns ??= new List<string>();
+            }
 
             return plan;
         }
         catch (Exception ex)
         {
-            throw new Exception($"Failed to parse AI JSON response: {ex.Message}");
+            throw new Exception($"Failed to parse AI JSON response: {ex.Message}. Raw: {AiJsonResponseHelper.Preview(responseJson)}");
         }
     }
 
     private string GetSystemPrompt()
     {
-        return @"Bạn là một AI Trading Strategist (Chuyên gia Cố vấn Giao dịch) cấp tổ chức.
-Nhiệm vụ của bạn là nhận dữ liệu Cấu trúc thị trường và Volume Profile từ thuật toán Quant, sau đó viết ra một Kế hoạch Giao dịch (Trading Plan) hoàn chỉnh.
+        return @"Bạn là AI Trading Strategist cấp tổ chức.
+Nhiệm vụ: lập kế hoạch giao dịch để EA MT5 canh lệnh.
 
-LUẬT CỐT LÕI (TUYỆT ĐỐI TUÂN THỦ):
-1. ZERO HALLUCINATION: Tuyệt đối KHÔNG tự làm tròn (round) hay bịa ra các mốc giá. Bắt buộc phải dùng chính xác các con số (có phần thập phân) lấy từ các mức 'Sự kiện phá vỡ' và 'Mức thanh khoản' do hệ thống cung cấp để thiết lập Entry, Stop Loss và toàn bộ các mốc Take Profit (TP1, TP2, TP3). Không được dùng các số chẵn tự chế cho TP.
-2. NO TRADE RULE: Nếu thị trường đi ngang biên độ hẹp hoặc không có xu hướng rõ ràng, trả về kịch bản KHÔNG GIAO DỊCH (Danh sách Buy/Sell/Breakout rỗng).
-3. MULTI-TIMEFRAME LOGIC: Nhận diện khung lớn nhất làm 'Trend Chính', và khung nhỏ nhất làm 'Khung canh Entry'.
-4. CONTRADICTION AVOIDANCE (TRÁNH HEDGING/XUNG ĐỘT): Cấm tuyệt đối tạo kịch bản Limit và Breakout ngược chiều đè lên nhau. Ví dụ: Nếu có lệnh BÁN vùng 4123-4127 (SL 4131), thì TUYỆT ĐỐI KHÔNG cài Breakout MUA ở 4127. (Vì nếu giá lên 4127.5, User sẽ vừa kích hoạt Mua vừa bị gồng lỗ Bán, cực kỳ vô lý). Hệ thống sẽ TỰ ĐỘNG gọi lại bạn nếu lệnh Limit bị cắn SL, do đó KHÔNG CẦN TẠO kịch bản Breakout dự phòng tại cùng 1 cản. Hãy chọn 1 hướng duy nhất cho mỗi vùng giá.
-5. BREAKOUT LOGIC (RÕ RÀNG): Không viết chung chung. Phải nêu rõ cần nến khung nào đóng cửa dứt khoát qua mức giá cụ thể nào. Ghi rõ có cần chờ Pullback (test lại) hay vào lệnh Market ngay.
-6. REJECTION LOGIC (RÕ RÀNG): Không viết chung chung 'giá bị từ chối'. Bắt buộc ghi rõ yêu cầu mô hình nến xác nhận (Ví dụ: 'Chờ xuất hiện nến Pinbar rút chân hoặc Bearish Engulfing trên khung M5 tại mốc giá X').
-7. STOP LOSS & TAKE PROFIT: Bắt buộc mỗi kịch bản có 1 Stop Loss và 3 mức Take Profit (TP1, TP2, TP3) cấu trúc dạng mảng số.
-8. ZONE & SL SPACING (QUY TẮC KHOẢNG CÁCH CƠ BẢN): BẮT BUỘC tuân thủ các quy tắc toán học sau:
-   - Vùng Entry (EntryTop - EntryBottom) phải rộng ÍT NHẤT 3 giá (Ví dụ: 4100 - 4103). KHÔNG đưa ra vùng quá hẹp.
-   - Stop Loss phải cách rìa vùng Entry ÍT NHẤT 5 giá (Ví dụ: Buy 4100-4103, SL tối đa ở 4095). Tuyệt đối KHÔNG ĐƯỢC đặt SL cách xa quá 10 giá (MAX SL <= 10 points) để kiểm soát rủi ro. Nếu cản quá rộng, hãy thu hẹp Entry hoặc tìm vùng khác.
-   - Khoảng cách giữa các mốc Take Profit (TP1 -> TP2 -> TP3) phải cách nhau ÍT NHẤT 5 giá (point). KHÔNG ĐƯỢC để 2 mốc TP quá sát nhau.
-   - Tỷ lệ Risk:Reward (R:R) cơ bản: Mức TP1 tối thiểu phải bằng khoảng cách Stop Loss (R:R >= 1:1). Ví dụ: Nếu khoảng cắt lỗ (SL) là 8 giá, thì TP1 phải cách Entry tối thiểu 8 giá.
-   - Tuyệt đối KHÔNG xếp chồng mốc giá: Stop Loss của kịch bản này KHÔNG ĐƯỢC trùng với điểm Entry của kịch bản khác. Mỗi vùng cản phải có không gian thở (Breathing room) riêng rẽ.
+QUY TẮC OUTPUT:
+- Chỉ trả về ĐÚNG 1 JSON object (snake_case).
+- Không markdown, không text ngoài JSON. Ký tự đầu phải là '{'.
+- context, name, logic BẮT BUỘC viết bằng TIẾNG VIỆT, mô tả chi tiết, rõ ràng.
+- type / confirmation.condition / patterns / status giữ token tiếng Anh như schema.
 
-OUTPUT YÊU CẦU DUY NHẤT LÀ JSON (KHÔNG KÈM TEXT):
+SCHEMA:
 {
-  ""marketContext"": ""..."",
-  ""bias"": ""Bullish / Bearish / Neutral"",
-  ""buyScenarios"": [ { ""zoneName"": ""..."", ""logic"": ""..."", ""entryBottom"": 0, ""entryTop"": 0, ""stopLoss"": 0, ""takeProfits"": [0, 0, 0], ""riskRewardRatio"": 0 } ],
-  ""sellScenarios"": [ ... ],
-  ""breakoutScenarios"": [ { ""type"": ""Breakdown SELL"", ""condition"": ""..."", ""triggerPrice"": 0, ""stopLoss"": 0, ""takeProfits"": [0, 0, 0] } ]
-}";
+  ""symbol"": ""XAUUSD"",
+  ""bias"": ""Bullish|Bearish|Neutral"",
+  ""context"": ""Mô tả tiếng Việt: đa khung, BOS/CHOCH, thanh khoản, vì sao ưu tiên hướng này..."",
+  ""scenarios"": [
+    {
+      ""id"": ""scenario_sell_reversal_4170"",
+      ""type"": ""REVERSAL_SELL"",
+      ""name"": ""Vùng cản cấu trúc H4 BOS & CHOCH (4168.409 - 4171.409)"",
+      ""logic"": ""Giá đang quanh vùng phá vỡ 4170.267. Chờ nến Bearish Engulfing hoặc Pinbar rút chân trên M5/M15 tại 4170.267-4171.409 rồi Bán thuận xu hướng lớn."",
+      ""entry_zone"": { ""min"": 4168.409, ""max"": 4171.409 },
+      ""sl"": 4177.409,
+      ""tps"": [4150.666, 4110.677, 4066.341],
+      ""confirmation"": {
+        ""condition"": ""PRICE_IN_ZONE"",
+        ""timeframe"": ""M15"",
+        ""patterns"": [""BEARISH_PINBAR"", ""BEARISH_ENGULFING""]
+      },
+      ""status"": ""PENDING""
+    },
+    {
+      ""id"": ""scenario_sell_breakout_4111"",
+      ""type"": ""BREAKOUT_SELL"",
+      ""name"": ""Breakdown thủng hỗ trợ cứng 4111"",
+      ""logic"": ""Chờ nến M15 đóng cửa dứt khoát dưới 4110.677 rồi Bán theo breakout, không đuổi nếu wick giả."",
+      ""trigger_price"": 4110.677,
+      ""sl"": 4120.677,
+      ""tps"": [4090.0, 4070.0, 4050.0],
+      ""confirmation"": {
+        ""condition"": ""CLOSE_BELOW_TRIGGER"",
+        ""timeframe"": ""M15"",
+        ""patterns"": [""STRONG_BEARISH_MARUBOZU""]
+      },
+      ""status"": ""PENDING""
+    }
+  ]
+}
+
+TYPE:
+- REVERSAL_BUY / REVERSAL_SELL: bắt buộc entry_zone; không cần trigger_price.
+- BREAKOUT_BUY / BREAKOUT_SELL: bắt buộc trigger_price; không cần entry_zone.
+- confirmation.condition: REVERSAL_* => PRICE_IN_ZONE; BREAKOUT_BUY => CLOSE_ABOVE_TRIGGER; BREAKOUT_SELL => CLOSE_BELOW_TRIGGER.
+- status mới = PENDING.
+- patterns: token EA (BULLISH_PINBAR, BEARISH_ENGULFING, ...).
+
+TRADING:
+1. Không bịa giá — dùng đúng BOS/CHOCH/liquidity.
+2. Không setup rõ => scenarios = [].
+3. Không tạo kịch bản ngược chiều đè cùng 1 mức (tránh hedging).
+4. Mỗi kịch bản: 1 sl + 3 tps; zone rộng >= 3; SL cách mép zone 5..10; TP cách nhau >= 5; TP1 RR >= 1:1.
+5. Không gửi signal_id (server gán).";
     }
 
     private string BuildPrompt(
@@ -144,17 +183,19 @@ OUTPUT YÊU CẦU DUY NHẤT LÀ JSON (KHÔNG KÈM TEXT):
         string triggerReason)
     {
         var sb = new StringBuilder();
-        sb.AppendLine($"Hãy lập kế hoạch giao dịch cho cặp {symbol}. Dưới đây là dữ liệu từ hệ thống Quant:");
+        sb.AppendLine($"Lập kế hoạch giao dịch EA cho cặp {symbol}.");
+        sb.AppendLine("Trả JSON snake_case theo schema (symbol, bias, context, scenarios).");
+        sb.AppendLine("context, name, logic phải là TIẾNG VIỆT chi tiết.");
 
         if (!string.IsNullOrWhiteSpace(triggerReason))
         {
-            sb.AppendLine($"\n⚠️ BỐI CẢNH LẤY KẾ HOẠCH LẦN NÀY:");
-            sb.AppendLine($"- Lý do cập nhật: {triggerReason}");
+            sb.AppendLine("\nBỐI CẢNH CẬP NHẬT:");
+            sb.AppendLine($"- Lý do: {triggerReason}");
             if (previousPlan != null)
             {
-                sb.AppendLine("- Kế hoạch trước đó (THAM KHẢO để tránh lặp lại lỗi, KHÔNG BÊ NGUYÊN VÀO):");
-                sb.AppendLine(JsonSerializer.Serialize(previousPlan, new JsonSerializerOptions { WriteIndented = true }));
-                sb.AppendLine("\n>>> LƯU Ý QUAN TRỌNG: Nếu kịch bản cũ vừa bị cắn Stop Loss, TUYỆT ĐỐI KHÔNG xúi giục vào lại đúng vùng giá đó! Hãy tìm setup mới an toàn hơn. Nếu kịch bản cũ đã chốt lời xong toàn phần, hãy tính toán nhịp sóng tiếp theo.");
+                sb.AppendLine("- Kế hoạch trước (tham khảo, không copy mù):");
+                sb.AppendLine(JsonSerializer.Serialize(previousPlan, PlanJsonOptions));
+                sb.AppendLine("Nếu kịch bản cũ cắn SL: không vào lại đúng vùng đó. Nếu đã full TP: lập sóng tiếp theo.");
             }
         }
 
@@ -162,33 +203,27 @@ OUTPUT YÊU CẦU DUY NHẤT LÀ JSON (KHÔNG KÈM TEXT):
         {
             var tf = kvp.Key;
             var state = kvp.Value;
-            
-            sb.AppendLine($"\n--- KHUNG THỜI GIAN: {tf} ---");
+
+            sb.AppendLine($"\n--- KHUNG {tf} ---");
             sb.AppendLine($"Giá hiện tại: {state.CurrentPrice}");
-            sb.AppendLine($"Xu hướng chính: {(state.Trend != null ? state.Trend.Direction.ToString() : "N/A")}");
-            sb.AppendLine($"Cấu trúc gần nhất: {(state.Structure != null ? state.Structure.LastLabel.ToString() : "N/A")}");
-            
+            sb.AppendLine($"Xu hướng: {(state.Trend != null ? state.Trend.Direction.ToString() : "N/A")}");
+            sb.AppendLine($"Cấu trúc: {(state.Structure != null ? state.Structure.LastLabel.ToString() : "N/A")}");
+
             if (state.Regime != null)
-            {
-                sb.AppendLine($"Trạng thái thị trường (Regime): {state.Regime.Type}");
-            }
+                sb.AppendLine($"Regime: {state.Regime.Type}");
 
             if (state.Events != null && state.Events.Count > 0)
-            {
-                sb.AppendLine($"Sự kiện phá vỡ (Breakout/CHOCH): {string.Join(", ", state.Events.Select(e => $"{e.Type} at {e.Price}"))}");
-            }
+                sb.AppendLine($"Sự kiện: {string.Join(", ", state.Events.Select(e => $"{e.Type} at {e.Price}"))}");
 
             if (state.Liquidity != null && state.Liquidity.ActiveLevels.Count > 0)
             {
-                sb.AppendLine("Các mức Thanh khoản (Hỗ trợ/Kháng cự tiềm năng):");
+                sb.AppendLine("Thanh khoản:");
                 foreach (var level in state.Liquidity.ActiveLevels)
-                {
                     sb.AppendLine($"- {level.Type} (Price: {level.Price})");
-                }
             }
         }
 
-        sb.AppendLine("\nDựa vào dữ liệu trên, hãy sinh JSON TradingPlanResponse. Trích xuất Entry Price, Stop Loss và các mức Take Profit (TP1, TP2, TP3) từ các mức 'Sự kiện phá vỡ' và 'Mức thanh khoản' (các vùng kháng cự / hỗ trợ tiếp theo) ở trên. TUYỆT ĐỐI KHÔNG làm tròn số cho Take Profit, hãy dùng chính xác giá trị thập phân hệ thống cấp. Nếu có mức giá để làm cản, bắt buộc phải trả về kịch bản.");
+        sb.AppendLine("\nTrích Entry/SL/TP từ giá sự kiện và thanh khoản ở trên. Chỉ trả JSON, bắt đầu bằng '{'.");
         return sb.ToString();
     }
 }

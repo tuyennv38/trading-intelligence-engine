@@ -325,143 +325,95 @@ public class MarketDataController : ControllerBase
                 }
                 
                 bool planUpdated = false;
-                var justActivatedZones = new HashSet<string>();
+                var justActivatedIds = new HashSet<string>();
+                latestPlan.Scenarios ??= new List<EaTradeScenario>();
 
-                // Kiểm tra xem hiện tại CÓ KỊCH BẢN NÀO ĐANG CHẠY (ĐÃ KHỚP) CHƯA?
-                bool isAnyScenarioActive = 
-                    (latestPlan.BuyScenarios?.Any(b => b.IsActive) == true) ||
-                    (latestPlan.SellScenarios?.Any(s => s.IsActive) == true) ||
-                    (latestPlan.BreakoutScenarios?.Any(br => br.IsActive) == true);
+                // One-Cancels-Other: chỉ kích hoạt scenario mới nếu chưa có scenario ACTIVE
+                bool isAnyScenarioActive = latestPlan.HasActiveScenario;
 
-                // 1. Cập nhật trạng thái IsActive 
-                // LOGIC QUAN TRỌNG (One-Cancels-Other): CHỈ khớp lệnh mới nếu CHƯA CÓ lệnh nào đang chạy.
-                // Nếu đã có 1 lệnh Buy đang chạy, thì bỏ qua không kiểm tra điểm vào của lệnh Sell/Breakout nữa, tránh xung đột.
                 if (!isAnyScenarioActive)
                 {
-                    if (latestPlan.BuyScenarios != null)
+                    foreach (var scenario in latestPlan.Scenarios)
                     {
-                        foreach (var b in latestPlan.BuyScenarios)
-                        {
-                            if (!isAnyScenarioActive && currentPrice <= b.EntryTop)
-                            { 
-                                b.IsActive = true; 
-                                planUpdated = true; 
-                                justActivatedZones.Add(b.ZoneName); 
-                                isAnyScenarioActive = true;
-                            }
-                        }
-                    }
-                    
-                    if (latestPlan.SellScenarios != null)
-                    {
-                        foreach (var s in latestPlan.SellScenarios)
-                        {
-                            if (!isAnyScenarioActive && currentPrice >= s.EntryBottom)
-                            { 
-                                s.IsActive = true; 
-                                planUpdated = true; 
-                                justActivatedZones.Add(s.ZoneName);
-                                isAnyScenarioActive = true;
-                            }
-                        }
-                    }
+                        if (isAnyScenarioActive)
+                            break;
 
-                    if (latestPlan.BreakoutScenarios != null)
-                    {
-                        foreach (var br in latestPlan.BreakoutScenarios)
+                        bool shouldActivate = false;
+                        if (scenario.IsReversal && scenario.EntryZone != null)
                         {
-                            if (!isAnyScenarioActive)
-                            {
-                                if (br.Type.Contains("BUY", StringComparison.OrdinalIgnoreCase) && currentPrice >= br.TriggerPrice)
-                                { 
-                                    br.IsActive = true; 
-                                    planUpdated = true; 
-                                    justActivatedZones.Add(br.Type);
-                                    isAnyScenarioActive = true;
-                                }
-                                else if (br.Type.Contains("SELL", StringComparison.OrdinalIgnoreCase) && currentPrice <= br.TriggerPrice)
-                                { 
-                                    br.IsActive = true; 
-                                    planUpdated = true; 
-                                    justActivatedZones.Add(br.Type);
-                                    isAnyScenarioActive = true;
-                                }
-                            }
+                            if (scenario.IsBuy && currentPrice <= scenario.EntryZone.Max)
+                                shouldActivate = true;
+                            else if (scenario.IsSell && currentPrice >= scenario.EntryZone.Min)
+                                shouldActivate = true;
                         }
+                        else if (scenario.IsBreakout && scenario.TriggerPrice.HasValue)
+                        {
+                            if (scenario.IsBuy && currentPrice >= scenario.TriggerPrice.Value)
+                                shouldActivate = true;
+                            else if (scenario.IsSell && currentPrice <= scenario.TriggerPrice.Value)
+                                shouldActivate = true;
+                        }
+
+                        if (!shouldActivate)
+                            continue;
+
+                        scenario.Status = EaScenarioStatus.Active;
+                        planUpdated = true;
+                        justActivatedIds.Add(scenario.Id);
+                        isAnyScenarioActive = true;
                     }
                 }
 
-                // Nếu có sự thay đổi State thì lưu lại Plan vào Cache ngay lập tức
                 if (planUpdated)
                 {
                     await _marketDataStore.SetLatestPlanAsync(request.Symbol, latestPlan);
                 }
 
-                // TH1: AI đang bảo "NO TRADE", nhưng nay cấu trúc đã thay đổi
-                if ((latestPlan.BuyScenarios == null || !latestPlan.BuyScenarios.Any()) && 
-                    (latestPlan.SellScenarios == null || !latestPlan.SellScenarios.Any()) && hasStructuralChange)
+                // TH1: NO TRADE nhưng cấu trúc đổi
+                if (!latestPlan.HasScenarios && hasStructuralChange)
                 {
                     shouldTriggerAi = true;
                     triggerReason = "Cấu trúc vừa thay đổi, gọi AI để xem đã có setup giao dịch chưa.";
                 }
-                
-                // TH2: Giá hiện tại đã cắn Stop Loss của các kịch bản ĐANG ACTIVE (Invalidation)
+
+                // TH2/TH3: SL / Full TP của scenario ACTIVE
                 if (currentPrice > 0)
                 {
-                    // LƯU Ý LOGIC: 
-                    // Nếu kịch bản VỪA MỚI kích hoạt ở tick này, chỉ dùng CurrentPrice để check SL (tránh râu nến ảo quá khứ).
-                    // Nếu kịch bản ĐÃ kích hoạt từ trước, được phép dùng maxHigh/minLow để bắt râu nến quét SL.
-                    var hitSell = latestPlan.SellScenarios?.FirstOrDefault(s => s.IsActive && (justActivatedZones.Contains(s.ZoneName) ? currentPrice >= s.StopLoss : maxHigh >= s.StopLoss));
-                    var hitBuy = latestPlan.BuyScenarios?.FirstOrDefault(b => b.IsActive && (justActivatedZones.Contains(b.ZoneName) ? currentPrice <= b.StopLoss : minLow <= b.StopLoss));
-                    var hitBreakout = latestPlan.BreakoutScenarios?.FirstOrDefault(br => 
-                        br.IsActive && (
-                            (br.Type.Contains("BUY", StringComparison.OrdinalIgnoreCase) && (justActivatedZones.Contains(br.Type) ? currentPrice <= br.StopLoss : minLow <= br.StopLoss)) || 
-                            (br.Type.Contains("SELL", StringComparison.OrdinalIgnoreCase) && (justActivatedZones.Contains(br.Type) ? currentPrice >= br.StopLoss : maxHigh >= br.StopLoss))
-                        ));
-                    
-                    if (hitSell != null)
+                    var active = latestPlan.Scenarios.Where(s => s.IsActive).ToList();
+                    foreach (var scenario in active)
                     {
-                        shouldTriggerAi = true;
-                        triggerReason = $"Giá ({maxHigh}) đã cắn Stop Loss ({hitSell.StopLoss}) của kịch bản BÁN [{hitSell.ZoneName}]. Đang tính toán lại...";
-                    }
-                    else if (hitBuy != null)
-                    {
-                        shouldTriggerAi = true;
-                        triggerReason = $"Giá ({minLow}) đã cắn Stop Loss ({hitBuy.StopLoss}) của kịch bản MUA [{hitBuy.ZoneName}]. Đang tính toán lại...";
-                    }
-                    else if (hitBreakout != null)
-                    {
-                        shouldTriggerAi = true;
-                        decimal hitPrice = hitBreakout.Type.Contains("BUY", StringComparison.OrdinalIgnoreCase) ? minLow : maxHigh;
-                        triggerReason = $"Giá ({hitPrice}) đã cắn Stop Loss ({hitBreakout.StopLoss}) của kịch bản BREAKOUT [{hitBreakout.Type}]. Đang tính toán lại...";
-                    }
-                    else
-                    {
-                        // TH3: Giá hiện tại đã đạt Full TP (Take Profit cuối cùng) của một kịch bản ĐANG ACTIVE
-                        var hitFullTpBuy = latestPlan.BuyScenarios?.FirstOrDefault(b => b.IsActive && b.TakeProfits != null && b.TakeProfits.Any() && (justActivatedZones.Contains(b.ZoneName) ? currentPrice >= b.TakeProfits.Max() : maxHigh >= b.TakeProfits.Max()));
-                        var hitFullTpSell = latestPlan.SellScenarios?.FirstOrDefault(s => s.IsActive && s.TakeProfits != null && s.TakeProfits.Any() && (justActivatedZones.Contains(s.ZoneName) ? currentPrice <= s.TakeProfits.Min() : minLow <= s.TakeProfits.Min()));
-                        var hitFullTpBreakoutBuy = latestPlan.BreakoutScenarios?.FirstOrDefault(br => br.IsActive && br.Type.Contains("BUY", StringComparison.OrdinalIgnoreCase) && br.TakeProfits != null && br.TakeProfits.Any() && (justActivatedZones.Contains(br.Type) ? currentPrice >= br.TakeProfits.Max() : maxHigh >= br.TakeProfits.Max()));
-                        var hitFullTpBreakoutSell = latestPlan.BreakoutScenarios?.FirstOrDefault(br => br.IsActive && br.Type.Contains("SELL", StringComparison.OrdinalIgnoreCase) && br.TakeProfits != null && br.TakeProfits.Any() && (justActivatedZones.Contains(br.Type) ? currentPrice <= br.TakeProfits.Min() : minLow <= br.TakeProfits.Min()));
+                        bool justActivated = justActivatedIds.Contains(scenario.Id);
+                        bool hitSl = scenario.IsBuy
+                            ? (justActivated ? currentPrice <= scenario.StopLoss : minLow <= scenario.StopLoss)
+                            : (justActivated ? currentPrice >= scenario.StopLoss : maxHigh >= scenario.StopLoss);
 
-                        if (hitFullTpBuy != null)
+                        if (hitSl)
                         {
+                            scenario.Status = EaScenarioStatus.HitSl;
                             shouldTriggerAi = true;
-                            triggerReason = $"🎉 TUYỆT VỜI! Giá ({maxHigh}) đã lấp đầy toàn bộ TP ({hitFullTpBuy.TakeProfits.Max()}) của kịch bản MUA [{hitFullTpBuy.ZoneName}]. Bắt đầu lấy Plan mới...";
+                            triggerReason = $"Giá đã cắn Stop Loss ({scenario.StopLoss}) của kịch bản [{scenario.Id}] {scenario.Name}. Đang tính toán lại...";
+                            await _marketDataStore.SetLatestPlanAsync(request.Symbol, latestPlan);
+                            break;
                         }
-                        else if (hitFullTpSell != null)
+
+                        if (scenario.TakeProfits == null || scenario.TakeProfits.Count == 0)
+                            continue;
+
+                        decimal finalTp = scenario.IsBuy
+                            ? scenario.TakeProfits.Max()
+                            : scenario.TakeProfits.Min();
+
+                        bool hitFullTp = scenario.IsBuy
+                            ? (justActivated ? currentPrice >= finalTp : maxHigh >= finalTp)
+                            : (justActivated ? currentPrice <= finalTp : minLow <= finalTp);
+
+                        if (hitFullTp)
                         {
+                            scenario.Status = EaScenarioStatus.HitTp;
                             shouldTriggerAi = true;
-                            triggerReason = $"🎉 TUYỆT VỜI! Giá ({minLow}) đã lấp đầy toàn bộ TP ({hitFullTpSell.TakeProfits.Min()}) của kịch bản BÁN [{hitFullTpSell.ZoneName}]. Bắt đầu lấy Plan mới...";
-                        }
-                        else if (hitFullTpBreakoutBuy != null)
-                        {
-                            shouldTriggerAi = true;
-                            triggerReason = $"🎉 TUYỆT VỜI! Giá ({maxHigh}) đã lấp đầy toàn bộ TP ({hitFullTpBreakoutBuy.TakeProfits.Max()}) của kịch bản BREAKOUT BUY. Bắt đầu lấy Plan mới...";
-                        }
-                        else if (hitFullTpBreakoutSell != null)
-                        {
-                            shouldTriggerAi = true;
-                            triggerReason = $"🎉 TUYỆT VỜI! Giá ({minLow}) đã lấp đầy toàn bộ TP ({hitFullTpBreakoutSell.TakeProfits.Min()}) của kịch bản BREAKOUT SELL. Bắt đầu lấy Plan mới...";
+                            triggerReason = $"🎉 Giá đã lấp đầy TP ({finalTp}) của kịch bản [{scenario.Id}] {scenario.Name}. Bắt đầu lấy Plan mới...";
+                            await _marketDataStore.SetLatestPlanAsync(request.Symbol, latestPlan);
+                            break;
                         }
                     }
                 }

@@ -1,41 +1,153 @@
 using System.Collections.Generic;
+using System.Linq;
+using System.Text.Json.Serialization;
 
 namespace TradingIntelligenceEngine.Domain.AI;
 
-public record TradingZone(
-    string ZoneName,
-    string Logic,
-    decimal EntryBottom,
-    decimal EntryTop,
-    decimal StopLoss,
-    List<decimal>? TakeProfits,
-    decimal RiskRewardRatio
-)
+/// <summary>
+/// Kế hoạch giao dịch theo schema EA (snake_case) để MT5 poll và canh lệnh.
+/// </summary>
+public class TradingPlanResponse
 {
-    public bool IsActive { get; set; } = false;
-}
-
-public record BreakoutScenario(
-    string Type,
-    string Condition,
-    decimal TriggerPrice,
-    decimal StopLoss,
-    List<decimal>? TakeProfits
-)
-{
-    public bool IsActive { get; set; } = false;
-}
-
-public record TradingPlanResponse(
-    string MarketContext,
-    string Bias,
-    List<TradingZone> BuyScenarios,
-    List<TradingZone> SellScenarios,
-    List<BreakoutScenario> BreakoutScenarios
-)
-{
+    [JsonPropertyName("signal_id")]
     public string SignalId { get; set; } = string.Empty;
+
+    [JsonPropertyName("symbol")]
+    public string Symbol { get; set; } = string.Empty;
+
+    [JsonPropertyName("bias")]
+    public string Bias { get; set; } = string.Empty;
+
+    [JsonPropertyName("context")]
+    public string Context { get; set; } = string.Empty;
+
+    [JsonPropertyName("scenarios")]
+    public List<EaTradeScenario> Scenarios { get; set; } = new();
+
+    [JsonPropertyName("created_at")]
     public long CreatedAt { get; set; } = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+
+    [JsonIgnore]
+    public bool HasScenarios => Scenarios != null && Scenarios.Count > 0;
+
+    [JsonIgnore]
+    public bool HasActiveScenario => Scenarios != null && Scenarios.Any(s => s.IsActive);
+
+    public void EnsureDefaults(string symbol, string signalId)
+    {
+        Symbol = string.IsNullOrWhiteSpace(Symbol) ? symbol : Symbol;
+        SignalId = signalId;
+        CreatedAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        Scenarios ??= new List<EaTradeScenario>();
+
+        for (int i = 0; i < Scenarios.Count; i++)
+        {
+            var s = Scenarios[i];
+            if (string.IsNullOrWhiteSpace(s.Id))
+                s.Id = $"scenario_{i + 1}_{s.Type}".ToLowerInvariant();
+            if (string.IsNullOrWhiteSpace(s.Status))
+                s.Status = EaScenarioStatus.Pending;
+            s.TakeProfits ??= new List<decimal>();
+            if (s.Confirmation != null)
+                s.Confirmation.Patterns ??= new List<string>();
+        }
+    }
+}
+
+public static class EaScenarioStatus
+{
+    public const string Pending = "PENDING";
+    public const string Active = "ACTIVE";
+    public const string HitSl = "HIT_SL";
+    public const string HitTp = "HIT_TP";
+    public const string Cancelled = "CANCELLED";
+}
+
+public static class EaScenarioType
+{
+    public const string ReversalBuy = "REVERSAL_BUY";
+    public const string ReversalSell = "REVERSAL_SELL";
+    public const string BreakoutBuy = "BREAKOUT_BUY";
+    public const string BreakoutSell = "BREAKOUT_SELL";
+}
+
+public class EaTradeScenario
+{
+    [JsonPropertyName("id")]
+    public string Id { get; set; } = string.Empty;
+
+    /// <summary>REVERSAL_BUY | REVERSAL_SELL | BREAKOUT_BUY | BREAKOUT_SELL</summary>
+    [JsonPropertyName("type")]
+    public string Type { get; set; } = string.Empty;
+
+    [JsonPropertyName("name")]
+    public string Name { get; set; } = string.Empty;
+
+    /// <summary>Mô tả logic vào lệnh (tiếng Việt) để hiển thị Chat / EA.</summary>
+    [JsonPropertyName("logic")]
+    public string Logic { get; set; } = string.Empty;
+
+    /// <summary>Bắt buộc với REVERSAL_*; null với BREAKOUT_*.</summary>
+    [JsonPropertyName("entry_zone")]
+    public EntryZone? EntryZone { get; set; }
+
+    /// <summary>Bắt buộc với BREAKOUT_*; null với REVERSAL_*.</summary>
+    [JsonPropertyName("trigger_price")]
+    public decimal? TriggerPrice { get; set; }
+
+    [JsonPropertyName("sl")]
+    public decimal StopLoss { get; set; }
+
+    [JsonPropertyName("tps")]
+    public List<decimal> TakeProfits { get; set; } = new();
+
+    [JsonPropertyName("confirmation")]
+    public ScenarioConfirmation? Confirmation { get; set; }
+
+    /// <summary>PENDING | ACTIVE | HIT_SL | HIT_TP | CANCELLED</summary>
+    [JsonPropertyName("status")]
+    public string Status { get; set; } = EaScenarioStatus.Pending;
+
+    [JsonIgnore]
+    public bool IsActive => string.Equals(Status, EaScenarioStatus.Active, StringComparison.OrdinalIgnoreCase);
+
+    [JsonIgnore]
+    public bool IsBuy =>
+        Type.Contains("BUY", StringComparison.OrdinalIgnoreCase);
+
+    [JsonIgnore]
+    public bool IsSell =>
+        Type.Contains("SELL", StringComparison.OrdinalIgnoreCase);
+
+    [JsonIgnore]
+    public bool IsBreakout =>
+        Type.StartsWith("BREAKOUT", StringComparison.OrdinalIgnoreCase);
+
+    [JsonIgnore]
+    public bool IsReversal =>
+        Type.StartsWith("REVERSAL", StringComparison.OrdinalIgnoreCase);
+}
+
+public class EntryZone
+{
+    [JsonPropertyName("min")]
+    public decimal Min { get; set; }
+
+    [JsonPropertyName("max")]
+    public decimal Max { get; set; }
+}
+
+public class ScenarioConfirmation
+{
+    /// <summary>PRICE_IN_ZONE | CLOSE_BELOW_TRIGGER | CLOSE_ABOVE_TRIGGER</summary>
+    [JsonPropertyName("condition")]
+    public string Condition { get; set; } = string.Empty;
+
+    [JsonPropertyName("timeframe")]
+    public string Timeframe { get; set; } = "M15";
+
+    [JsonPropertyName("patterns")]
+    public List<string> Patterns { get; set; } = new();
 }
 
 public interface ITradingStrategistEngine

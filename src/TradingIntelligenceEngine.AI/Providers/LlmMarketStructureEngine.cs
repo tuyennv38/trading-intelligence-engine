@@ -43,19 +43,70 @@ public class LlmMarketStructureEngine : IAiMarketStructureEngine
         if (string.IsNullOrWhiteSpace(baseUrl))
             throw new InvalidOperationException("AI BaseUrl is not configured. Call PUT /api/v1/ai/config first.");
 
-        var prompt = BuildPrompt(symbol, timeframe, candles);
-        var requestBody = new
+        var userPrompt = BuildPrompt(symbol, timeframe, candles);
+        Exception? lastError = null;
+
+        for (int attempt = 1; attempt <= 2; attempt++)
         {
-            model,
-            messages = new[]
+            var systemPrompt = attempt == 1 ? GetSystemPrompt() : GetRepairSystemPrompt();
+            var prompt = attempt == 1
+                ? userPrompt
+                : userPrompt + "\n\nIMPORTANT: Previous reply was invalid. Return ONLY one raw JSON object. No markdown. No explanation. First character must be '{'.";
+
+            try
             {
-                new { role = "system", content = GetSystemPrompt() },
-                new { role = "user", content = prompt }
-            },
-            temperature = 0.1,
-            stream = false,
-            response_format = new { type = "json_object" }
-        };
+                // Lần 2 bỏ response_format vì một số proxy trả plain text lỗi khi nhận field này
+                var dto = await CallAndParseAsync(
+                    baseUrl, apiKey, model, systemPrompt, prompt,
+                    useJsonObjectFormat: attempt == 1,
+                    cancellationToken);
+
+                return MapToMarketState(symbol, timeframeEnum, candles, dto);
+            }
+            catch (Exception ex)
+            {
+                lastError = ex;
+            }
+        }
+
+        throw new Exception(
+            $"AI structure parse failed after retry for {symbol}/{timeframe}: {lastError?.Message}",
+            lastError);
+    }
+
+    private async Task<AiStructureResponseDto> CallAndParseAsync(
+        string baseUrl,
+        string apiKey,
+        string model,
+        string systemPrompt,
+        string userPrompt,
+        bool useJsonObjectFormat,
+        CancellationToken cancellationToken)
+    {
+        object requestBody = useJsonObjectFormat
+            ? new
+            {
+                model,
+                messages = new[]
+                {
+                    new { role = "system", content = systemPrompt },
+                    new { role = "user", content = userPrompt }
+                },
+                temperature = 0.0,
+                stream = false,
+                response_format = new { type = "json_object" }
+            }
+            : new
+            {
+                model,
+                messages = new[]
+                {
+                    new { role = "system", content = systemPrompt },
+                    new { role = "user", content = userPrompt }
+                },
+                temperature = 0.0,
+                stream = false
+            };
 
         var jsonOptions = new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
         var content = new StringContent(JsonSerializer.Serialize(requestBody, jsonOptions), Encoding.UTF8, "application/json");
@@ -69,25 +120,40 @@ public class LlmMarketStructureEngine : IAiMarketStructureEngine
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
 
         var response = await _httpClient.SendAsync(request, cancellationToken);
+        var responseBody = await response.Content.ReadAsStringAsync(cancellationToken);
+
         if (!response.IsSuccessStatusCode)
+            throw new Exception($"AI structure API call failed: {response.StatusCode} - {AiJsonResponseHelper.Preview(responseBody)}");
+
+        var assistantText = AiJsonResponseHelper.ExtractAssistantText(responseBody);
+        if (string.IsNullOrWhiteSpace(assistantText))
+            throw new Exception($"Empty AI structure response. Raw: {AiJsonResponseHelper.Preview(responseBody)}");
+
+        var json = AiJsonResponseHelper.ExtractJsonObject(assistantText);
+        if (string.IsNullOrWhiteSpace(json) || json[0] != '{')
         {
-            var error = await response.Content.ReadAsStringAsync(cancellationToken);
-            throw new Exception($"AI structure API call failed: {response.StatusCode} - {error}");
+            throw new Exception(
+                $"AI structure did not return JSON object. Preview: {AiJsonResponseHelper.Preview(assistantText)}");
         }
 
-        var responseJson = await response.Content.ReadAsStringAsync(cancellationToken);
-        var messageContent = ExtractMessageContent(responseJson);
-        if (string.IsNullOrWhiteSpace(messageContent))
-            throw new Exception("Empty AI structure response.");
-
-        messageContent = StripMarkdownFence(messageContent);
-
-        var dto = JsonSerializer.Deserialize<AiStructureResponseDto>(messageContent, new JsonSerializerOptions
+        try
         {
-            PropertyNameCaseInsensitive = true
-        }) ?? throw new Exception("Failed to deserialize AI structure response.");
+            var dto = JsonSerializer.Deserialize<AiStructureResponseDto>(json, new JsonSerializerOptions
+            {
+                PropertyNameCaseInsensitive = true
+            });
 
-        return MapToMarketState(symbol, timeframeEnum, candles, dto);
+            if (dto == null)
+                throw new Exception("Deserialized AI structure DTO is null.");
+
+            return dto;
+        }
+        catch (JsonException ex)
+        {
+            throw new Exception(
+                $"Invalid AI structure JSON: {ex.Message}. Preview: {AiJsonResponseHelper.Preview(json)}",
+                ex);
+        }
     }
 
     private static MarketState MapToMarketState(
@@ -192,9 +258,9 @@ public class LlmMarketStructureEngine : IAiMarketStructureEngine
     private static string BuildPrompt(string symbol, string timeframe, IReadOnlyList<AiCandleInput> candles)
     {
         var sb = new StringBuilder();
-        sb.AppendLine($"Phân tích cấu trúc thị trường cho {symbol} khung {timeframe}.");
-        sb.AppendLine($"Số nến: {candles.Count}. Giá đóng cửa gần nhất: {candles[^1].Close.ToString(CultureInfo.InvariantCulture)}");
-        sb.AppendLine("Dữ liệu OHLC (time,open,high,low,close,tickVolume):");
+        sb.AppendLine($"Analyze market structure for {symbol} on {timeframe}.");
+        sb.AppendLine($"Candle count: {candles.Count}. Last close: {candles[^1].Close.ToString(CultureInfo.InvariantCulture)}");
+        sb.AppendLine("OHLC rows (time,open,high,low,close,tickVolume):");
         foreach (var c in candles)
         {
             sb.AppendLine(string.Format(
@@ -204,16 +270,23 @@ public class LlmMarketStructureEngine : IAiMarketStructureEngine
         }
 
         sb.AppendLine();
-        sb.AppendLine("Trả về đúng JSON theo schema đã mô tả trong system prompt. Dùng chính xác giá từ nến, không làm tròn.");
+        sb.AppendLine("Return ONLY the JSON object defined in the system prompt. No prose. First character must be '{'.");
         return sb.ToString();
     }
 
     private static string GetSystemPrompt()
     {
-        return @"Bạn là chuyên gia Market Structure (SMC/Price Action).
-Nhiệm vụ: đọc chuỗi nến OHLC và nhận dạng cấu trúc thị trường.
+        return @"You are a market-structure analyst (SMC / price action).
+Read OHLC candles and output market structure.
 
-OUTPUT DUY NHẤT LÀ JSON (không markdown, không text kèm):
+CRITICAL OUTPUT RULES:
+- Reply with ONE JSON object only.
+- No markdown fences.
+- No Vietnamese/English explanation before or after JSON.
+- The first non-whitespace character MUST be '{'.
+- The last non-whitespace character MUST be '}'.
+
+Schema:
 {
   ""currentPrice"": 0,
   ""trend"": { ""direction"": ""Bullish|Bearish"", ""strength"": 0.0 },
@@ -229,34 +302,20 @@ OUTPUT DUY NHẤT LÀ JSON (không markdown, không text kèm):
   ""regime"": { ""type"": ""TrendingUp|TrendingDown|Ranging|Transition|HighVolatility|LowVolatility"", ""confidence"": 0.0 }
 }
 
-QUY TẮC:
-1. currentPrice = close của nến cuối.
-2. Xác định swing HH/HL/LH/LL, BOS/CHOCH và mức thanh khoản từ OHLC thực tế.
-3. Mọi mức giá phải lấy từ high/low/close của nến — không bịa số tròn.
-4. sequence là chuỗi nhãn cấu trúc gần đây (mới nhất ở cuối).
-5. BuySide = equal highs / kháng cự thanh khoản; SellSide = equal lows / hỗ trợ thanh khoản.";
+Rules:
+1. currentPrice = last candle close.
+2. Detect swings HH/HL/LH/LL, BOS/CHOCH and liquidity from real OHLC.
+3. Use exact prices from candles — do not invent round numbers.
+4. sequence = recent structure labels (newest last).
+5. BuySide = equal highs / resistance liquidity; SellSide = equal lows / support liquidity.";
     }
 
-    private static string ExtractMessageContent(string responseJson)
+    private static string GetRepairSystemPrompt()
     {
-        using var document = JsonDocument.Parse(responseJson);
-        return document.RootElement
-            .GetProperty("choices")[0]
-            .GetProperty("message")
-            .GetProperty("content")
-            .GetString() ?? string.Empty;
-    }
-
-    private static string StripMarkdownFence(string content)
-    {
-        content = content.Trim();
-        if (content.StartsWith("```json", StringComparison.OrdinalIgnoreCase))
-            content = content.Substring(7);
-        else if (content.StartsWith("```", StringComparison.Ordinal))
-            content = content.Substring(3);
-        if (content.EndsWith("```", StringComparison.Ordinal))
-            content = content.Substring(0, content.Length - 3);
-        return content.Trim();
+        return @"You must output ONLY a valid JSON object for market structure.
+No text, no markdown, no code fences. Start with '{' and end with '}'.
+Use this schema exactly:
+{""currentPrice"":0,""trend"":{""direction"":""Bullish"",""strength"":0.5},""structure"":{""lastLabel"":""HL"",""sequence"":[""HL""]},""events"":[],""liquidity"":{""activeLevels"":[]},""regime"":{""type"":""Ranging"",""confidence"":0.5}}";
     }
 
     private sealed class AiStructureResponseDto
