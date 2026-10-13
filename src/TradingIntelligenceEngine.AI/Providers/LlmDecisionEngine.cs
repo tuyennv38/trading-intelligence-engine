@@ -20,21 +20,20 @@ public class LlmDecisionEngine : IAiDecisionEngine
     {
         _httpClient = httpClient;
         _options = options;
-
-        if (!string.IsNullOrWhiteSpace(_options.ApiKey))
-        {
-            _httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", _options.ApiKey);
-        }
     }
 
     public async Task<AiDecisionResult> DecideAsync(MarketDecisionContext context, CancellationToken cancellationToken)
     {
         var prompt = BuildPrompt(context);
         var sw = System.Diagnostics.Stopwatch.StartNew();
+        var (baseUrl, apiKey, model) = _options.Snapshot();
+
+        if (string.IsNullOrWhiteSpace(baseUrl))
+            throw new InvalidOperationException("AI BaseUrl is not configured. Call PUT /api/v1/ai/config first.");
 
         var requestBody = new
         {
-            model = _options.Model,
+            model,
             messages = new[]
             {
                 new { role = "system", content = "You are an elite trading AI. Analyze the market context and suggested signals. Return a strict JSON response." },
@@ -48,11 +47,15 @@ public class LlmDecisionEngine : IAiDecisionEngine
         var jsonOptions = new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
         var content = new StringContent(JsonSerializer.Serialize(requestBody, jsonOptions), Encoding.UTF8, "application/json");
 
-        string url = _options.BaseUrl;
+        string url = baseUrl;
         if (!url.EndsWith("/")) url += "/";
         url += "chat/completions";
 
-        var response = await _httpClient.PostAsync(url, content, cancellationToken);
+        using var request = new HttpRequestMessage(HttpMethod.Post, url) { Content = content };
+        if (!string.IsNullOrWhiteSpace(apiKey))
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
+
+        var response = await _httpClient.SendAsync(request, cancellationToken);
 
         if (!response.IsSuccessStatusCode)
         {
