@@ -1,6 +1,7 @@
 using System;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Mvc;
+using TradingIntelligenceEngine.Api.Services;
 using TradingIntelligenceEngine.Application.Interfaces;
 
 namespace TradingIntelligenceEngine.Api.Controllers;
@@ -10,10 +11,14 @@ namespace TradingIntelligenceEngine.Api.Controllers;
 public class EaScenarioController : ControllerBase
 {
     private readonly IMarketDataStore _marketDataStore;
+    private readonly ITradingPlanRefreshService _planRefreshService;
 
-    public EaScenarioController(IMarketDataStore marketDataStore)
+    public EaScenarioController(
+        IMarketDataStore marketDataStore,
+        ITradingPlanRefreshService planRefreshService)
     {
         _marketDataStore = marketDataStore;
+        _planRefreshService = planRefreshService;
     }
 
     /// <summary>
@@ -27,10 +32,9 @@ public class EaScenarioController : ControllerBase
         var plan = await _marketDataStore.GetLatestPlanAsync(symbol);
         if (plan == null)
         {
-            return Ok(new { signal_id = string.Empty });
+            return Ok(new { signal_id = string.Empty, needs_refresh = true });
         }
 
-        // Backfill ID cho plan cũ (trước khi có SignalId)
         if (string.IsNullOrEmpty(plan.SignalId))
         {
             var created = plan.CreatedAt > 0
@@ -40,7 +44,11 @@ public class EaScenarioController : ControllerBase
             await _marketDataStore.SetLatestPlanAsync(symbol, plan);
         }
 
-        return Ok(new { signal_id = plan.SignalId });
+        return Ok(new
+        {
+            signal_id = plan.SignalId,
+            needs_refresh = plan.NeedsRefresh
+        });
     }
 
     /// <summary>
@@ -59,5 +67,24 @@ public class EaScenarioController : ControllerBase
         }
 
         return Ok(plan);
+    }
+
+    /// <summary>
+    /// EA xin sinh kịch bản mới khi đã xong plan hiện tại (SL/TP/hết PENDING).
+    /// Giữ nguyên mode useAiStructure lúc initialize.
+    /// POST /api/v1/scenarios/refresh?symbol=XAUUSD
+    /// </summary>
+    [HttpPost("refresh")]
+    [ProducesResponseType(200)]
+    [ProducesResponseType(400)]
+    public async Task<IActionResult> RefreshScenarios([FromQuery] string symbol = "XAUUSD")
+    {
+        var (queued, message) = await _planRefreshService.EnqueueRefreshAsync(
+            symbol, "EA gọi /scenarios/refresh");
+
+        if (!queued)
+            return BadRequest(new { success = false, message });
+
+        return Ok(new { success = true, message, refresh_queued = true });
     }
 }

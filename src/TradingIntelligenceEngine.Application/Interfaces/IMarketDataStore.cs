@@ -40,4 +40,14 @@ public interface IMarketDataStore
     /// Lấy kế hoạch giao dịch cũ để kiểm tra (Cắn SL, Breakout, v.v.)
     /// </summary>
     Task<Domain.AI.TradingPlanResponse?> GetLatestPlanAsync(string symbol);
+
+    /// <summary>
+    /// Lưu session trading (useAiStructure + danh sách timeframe) sau initialize.
+    /// </summary>
+    Task SetSymbolSessionAsync(string symbol, SymbolTradingSession session);
+
+    /// <summary>
+    /// Lấy session trading theo symbol.
+    /// </summary>
+    Task<SymbolTradingSession?> GetSymbolSessionAsync(string symbol);
 }

@@ -33,6 +33,23 @@ public class TradingPlanResponse
     [JsonIgnore]
     public bool HasActiveScenario => Scenarios != null && Scenarios.Any(s => s.IsActive);
 
+    /// <summary>
+    /// true khi không còn scenario PENDING/ACTIVE — EA nên xin plan mới (refreshPlan).
+    /// </summary>
+    [JsonIgnore]
+    public bool NeedsRefresh
+    {
+        get
+        {
+            if (Scenarios == null || Scenarios.Count == 0)
+                return true;
+
+            return !Scenarios.Any(s =>
+                string.Equals(s.Status, EaScenarioStatus.Pending, StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(s.Status, EaScenarioStatus.Active, StringComparison.OrdinalIgnoreCase));
+        }
+    }
+
     public void EnsureDefaults(string symbol, string signalId)
     {
         Symbol = string.IsNullOrWhiteSpace(Symbol) ? symbol : Symbol;

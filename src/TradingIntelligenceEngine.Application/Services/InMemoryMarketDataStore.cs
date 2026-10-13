@@ -117,4 +117,22 @@ public class InMemoryMarketDataStore : IMarketDataStore
             return Task.FromResult<Domain.AI.TradingPlanResponse?>(null);
         }
     }
+
+    public Task SetSymbolSessionAsync(string symbol, SymbolTradingSession session)
+    {
+        var key = $"TradingSession_{symbol}";
+        lock (_lock) { _cache.Set(key, session); }
+        return Task.CompletedTask;
+    }
+
+    public Task<SymbolTradingSession?> GetSymbolSessionAsync(string symbol)
+    {
+        var key = $"TradingSession_{symbol}";
+        lock (_lock)
+        {
+            if (_cache.TryGetValue(key, out SymbolTradingSession? session))
+                return Task.FromResult(session);
+            return Task.FromResult<SymbolTradingSession?>(null);
+        }
+    }
 }

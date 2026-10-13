@@ -87,6 +87,7 @@ builder.Services.AddTransient<IRegimeAnalyzer, RegimeAnalyzer>();
 builder.Services.AddSingleton<IMarketDataStore, InMemoryMarketDataStore>(); // Register Data Store
 builder.Services.AddTransient<IMarketAnalyzer, MarketAnalyzerService>();
 builder.Services.AddTransient<IAiNotificationJob, AiNotificationJob>(); // Register Hangfire Job
+builder.Services.AddTransient<TradingIntelligenceEngine.Api.Services.ITradingPlanRefreshService, TradingIntelligenceEngine.Api.Services.TradingPlanRefreshService>();
 
 builder.Services.AddTransient<ITradingStrategy, TrendFollowingPullbackStrategy>();
 builder.Services.AddTransient<IStrategyEngine, StrategyEngine>();

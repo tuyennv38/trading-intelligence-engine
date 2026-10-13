@@ -9,6 +9,7 @@ using TradingIntelligenceEngine.Domain.MarketData;
 using TradingIntelligenceEngine.Domain.MarketState;
 using Hangfire;
 using TradingIntelligenceEngine.Api.Jobs;
+using TradingIntelligenceEngine.Api.Services;
 
 namespace TradingIntelligenceEngine.Api.Controllers;
 
@@ -20,6 +21,7 @@ public class MarketDataController : ControllerBase
     private readonly IMarketAnalyzer _marketAnalyzer;
     private readonly IMarketDataStore _marketDataStore;
     private readonly IBackgroundJobClient _backgroundJobClient;
+    private readonly ITradingPlanRefreshService _planRefreshService;
     private readonly ILogger<MarketDataController> _logger;
 
     public MarketDataController(
@@ -27,12 +29,14 @@ public class MarketDataController : ControllerBase
         IMarketAnalyzer marketAnalyzer,
         IMarketDataStore marketDataStore,
         IBackgroundJobClient backgroundJobClient,
+        ITradingPlanRefreshService planRefreshService,
         ILogger<MarketDataController> logger)
     {
         _notificationService = notificationService;
         _marketAnalyzer = marketAnalyzer;
         _marketDataStore = marketDataStore;
         _backgroundJobClient = backgroundJobClient;
+        _planRefreshService = planRefreshService;
         _logger = logger;
     }
 
@@ -140,6 +144,13 @@ public class MarketDataController : ControllerBase
                 return BadRequest(new { success = false, message = "Không có timeframe hợp lệ nào." });
             }
 
+            await _marketDataStore.SetSymbolSessionAsync(request.Symbol, new SymbolTradingSession
+            {
+                Symbol = request.Symbol,
+                UseAiStructure = request.UseAiStructure,
+                Timeframes = candlesByTimeframe.Keys.ToList()
+            });
+
             if (request.UseAiStructure)
             {
                 _logger.LogInformation(
@@ -235,73 +246,19 @@ public class MarketDataController : ControllerBase
 
         try
         {
-            var analysisResults = new Dictionary<string, MarketState>();
-            bool hasStructuralChange = false;
-
+            // 1) Luôn cập nhật nến
             foreach (var tfData in request.Timeframes)
             {
-                var timeframeStr = tfData.Key;
-                var newCandle = tfData.Value;
-
-                // 1. Nạp nến mới vào mảng trong RAM
-                await _marketDataStore.AppendCandleAsync(request.Symbol, timeframeStr, newCandle);
-
-                // 2. Lấy lại toàn bộ mảng nến hiện hành để tính toán lại Cấu trúc
-                var cachedCandles = await _marketDataStore.GetCandlesAsync(request.Symbol, timeframeStr);
-                
-                if (Enum.TryParse<Timeframe>(timeframeStr, true, out var timeframeEnum))
-                {
-                    var domainCandles = cachedCandles.Select(c => new Candle(
-                        time: DateTimeOffset.FromUnixTimeSeconds(c.Time),
-                        open: c.Open,
-                        high: c.High,
-                        low: c.Low,
-                        close: c.Close,
-                        volume: c.TickVolume,
-                        emaFast: c.EmaFast,
-                        emaSlow: c.EmaSlow,
-                        rsi: c.Rsi,
-                        adx: c.Adx,
-                        atr: c.Atr
-                    )).ToList();
-
-                    var analysisRequest = new MarketAnalysisRequest(request.Symbol, timeframeEnum, domainCandles);
-                    var newState = _marketAnalyzer.Analyze(analysisRequest);
-                    analysisResults.Add(timeframeStr, newState);
-                }
+                await _marketDataStore.AppendCandleAsync(request.Symbol, tfData.Key, tfData.Value);
             }
 
-            // 3. GIAI ĐOẠN 3 (STATEFUL CHECK): So sánh trạng thái mới với trạng thái cũ
-            var oldState = await _marketDataStore.GetLatestStateAsync(request.Symbol);
+            // 2) Cập nhật trạng thái scenario (ACTIVE / HIT_SL / HIT_TP) — không tự sinh plan mới
             var latestPlan = await _marketDataStore.GetLatestPlanAsync(request.Symbol);
-
-            if (oldState != null)
-            {
-                // Kiểm tra xem có cấu trúc mới không (Ví dụ: Số lượng Events phá vỡ thay đổi)
-                // Một cách đơn giản là check xem LastLabel của khung H1 có thay đổi không
-                foreach (var tf in analysisResults.Keys)
-                {
-                    if (oldState.TryGetValue(tf, out var oldTfState))
-                    {
-                        var newTfState = analysisResults[tf];
-                        
-                        // Detect Structure change (e.g., from HH to HL, or a new BoS event)
-                        if (newTfState.Structure?.LastLabel != oldTfState.Structure?.LastLabel)
-                        {
-                            hasStructuralChange = true;
-                            _logger.LogInformation("Phát hiện thay đổi cấu trúc ở khung {TF}: {Old} -> {New}", tf, oldTfState.Structure?.LastLabel, newTfState.Structure?.LastLabel);
-                        }
-                    }
-                }
-            }
-
-            // GỌI LẠI AI NẾU CÓ TRIGGER
-            bool shouldTriggerAi = false;
-            string triggerReason = "";
+            string statusNote = "";
+            bool planUpdated = false;
 
             if (latestPlan != null)
             {
-                // TÍNH TOÁN HIGH/LOW TỪ KHUNG THỜI GIAN NHỎ NHẤT (Để bắt các râu nến quét SL/TP)
                 var smallestTfKey = request.Timeframes.Keys
                     .OrderBy(k => Enum.TryParse<Timeframe>(k, true, out var tf) ? (int)tf : 99)
                     .FirstOrDefault();
@@ -317,21 +274,12 @@ public class MarketDataController : ControllerBase
                     minLow = triggerCandle.Low;
                     currentPrice = triggerCandle.Close;
                 }
-                else
-                {
-                    currentPrice = analysisResults.Values.FirstOrDefault()?.CurrentPrice ?? 0;
-                    maxHigh = currentPrice;
-                    minLow = currentPrice;
-                }
-                
-                bool planUpdated = false;
+
                 var justActivatedIds = new HashSet<string>();
                 latestPlan.Scenarios ??= new List<EaTradeScenario>();
-
-                // One-Cancels-Other: chỉ kích hoạt scenario mới nếu chưa có scenario ACTIVE
                 bool isAnyScenarioActive = latestPlan.HasActiveScenario;
 
-                if (!isAnyScenarioActive)
+                if (!isAnyScenarioActive && currentPrice > 0)
                 {
                     foreach (var scenario in latestPlan.Scenarios)
                     {
@@ -361,26 +309,13 @@ public class MarketDataController : ControllerBase
                         planUpdated = true;
                         justActivatedIds.Add(scenario.Id);
                         isAnyScenarioActive = true;
+                        statusNote = $"Scenario [{scenario.Id}] chuyển ACTIVE.";
                     }
                 }
 
-                if (planUpdated)
-                {
-                    await _marketDataStore.SetLatestPlanAsync(request.Symbol, latestPlan);
-                }
-
-                // TH1: NO TRADE nhưng cấu trúc đổi
-                if (!latestPlan.HasScenarios && hasStructuralChange)
-                {
-                    shouldTriggerAi = true;
-                    triggerReason = "Cấu trúc vừa thay đổi, gọi AI để xem đã có setup giao dịch chưa.";
-                }
-
-                // TH2/TH3: SL / Full TP của scenario ACTIVE
                 if (currentPrice > 0)
                 {
-                    var active = latestPlan.Scenarios.Where(s => s.IsActive).ToList();
-                    foreach (var scenario in active)
+                    foreach (var scenario in latestPlan.Scenarios.Where(s => s.IsActive).ToList())
                     {
                         bool justActivated = justActivatedIds.Contains(scenario.Id);
                         bool hitSl = scenario.IsBuy
@@ -390,9 +325,10 @@ public class MarketDataController : ControllerBase
                         if (hitSl)
                         {
                             scenario.Status = EaScenarioStatus.HitSl;
-                            shouldTriggerAi = true;
-                            triggerReason = $"Giá đã cắn Stop Loss ({scenario.StopLoss}) của kịch bản [{scenario.Id}] {scenario.Name}. Đang tính toán lại...";
-                            await _marketDataStore.SetLatestPlanAsync(request.Symbol, latestPlan);
+                            planUpdated = true;
+                            statusNote = $"Giá cắn SL ({scenario.StopLoss}) của [{scenario.Id}]. EA nên refreshPlan khi sẵn sàng.";
+                            await _notificationService.SendMessageAsync(
+                                $"⚠️ *{request.Symbol}* cắn SL kịch bản `{scenario.Id}` — chờ EA xin plan mới (refreshPlan=true).");
                             break;
                         }
 
@@ -410,31 +346,44 @@ public class MarketDataController : ControllerBase
                         if (hitFullTp)
                         {
                             scenario.Status = EaScenarioStatus.HitTp;
-                            shouldTriggerAi = true;
-                            triggerReason = $"🎉 Giá đã lấp đầy TP ({finalTp}) của kịch bản [{scenario.Id}] {scenario.Name}. Bắt đầu lấy Plan mới...";
-                            await _marketDataStore.SetLatestPlanAsync(request.Symbol, latestPlan);
+                            planUpdated = true;
+                            statusNote = $"Giá đạt full TP ({finalTp}) của [{scenario.Id}]. EA nên refreshPlan khi sẵn sàng.";
+                            await _notificationService.SendMessageAsync(
+                                $"🎉 *{request.Symbol}* full TP kịch bản `{scenario.Id}` — chờ EA xin plan mới (refreshPlan=true).");
                             break;
                         }
                     }
                 }
+
+                if (planUpdated)
+                    await _marketDataStore.SetLatestPlanAsync(request.Symbol, latestPlan);
             }
 
-            if (shouldTriggerAi)
+            bool needsRefresh = latestPlan == null || latestPlan.NeedsRefresh;
+            bool refreshQueued = false;
+            string refreshMessage = "";
+
+            // 3) Chỉ khi EA chủ động xin plan mới
+            if (request.RefreshPlan)
             {
-                _logger.LogInformation("TRIGGER KÍCH HOẠT: {Reason}", triggerReason);
-                await _notificationService.SendMessageAsync($"🚨 *CẬP NHẬT KHẨN CẤP:* {triggerReason}");
-                
-                // Đẩy vào Hangfire để gọi lại AI
-                _backgroundJobClient.Enqueue<IAiNotificationJob>(job =>
-                    job.GenerateAndNotifyPlanAsync(request.Symbol, analysisResults, triggerReason, false, null));
+                var (queued, message) = await _planRefreshService.EnqueueRefreshAsync(
+                    request.Symbol,
+                    "EA yêu cầu kịch bản mới (refreshPlan=true)");
+                refreshQueued = queued;
+                refreshMessage = message;
             }
 
-            return Ok(new 
-            { 
-                success = true, 
-                message = "Cập nhật nến thành công.",
-                triggered_ai = shouldTriggerAi,
-                reason = triggerReason
+            return Ok(new
+            {
+                success = true,
+                message = request.RefreshPlan
+                    ? (refreshQueued ? refreshMessage : "Cập nhật nến OK nhưng không queue được plan mới: " + refreshMessage)
+                    : "Cập nhật nến thành công. Không tạo plan mới (refreshPlan=false).",
+                refresh_plan = request.RefreshPlan,
+                refresh_queued = refreshQueued,
+                needs_refresh = needsRefresh,
+                signal_id = latestPlan?.SignalId ?? string.Empty,
+                status_note = statusNote
             });
         }
         catch (Exception ex)
@@ -442,5 +391,20 @@ public class MarketDataController : ControllerBase
             _logger.LogError(ex, "Lỗi khi cập nhật Market Data.");
             return StatusCode(500, new { success = false, message = "Đã xảy ra lỗi nội bộ." });
         }
+    }
+
+    /// <summary>
+    /// EA xin kịch bản mới (không cần kèm nến). Dùng mode useAiStructure đã lưu lúc initialize.
+    /// </summary>
+    [HttpPost("refresh-plan")]
+    public async Task<IActionResult> RefreshPlan([FromQuery] string symbol = "XAUUSD")
+    {
+        var (queued, message) = await _planRefreshService.EnqueueRefreshAsync(
+            symbol, "EA gọi /market-data/refresh-plan");
+
+        if (!queued)
+            return BadRequest(new { success = false, message });
+
+        return Ok(new { success = true, message, refresh_queued = true });
     }
 }
