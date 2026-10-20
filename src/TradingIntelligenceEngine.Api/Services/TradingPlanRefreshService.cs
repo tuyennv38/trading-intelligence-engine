@@ -15,6 +15,11 @@ namespace TradingIntelligenceEngine.Api.Services;
 public interface ITradingPlanRefreshService
 {
     Task<(bool Queued, string Message)> EnqueueRefreshAsync(string symbol, string triggerReason);
+
+    /// <summary>
+    /// Lấy/build MarketState từ store (state đã lưu, hoặc Quant từ nến) để xuất prompt.
+    /// </summary>
+    Task<(Dictionary<string, MarketState>? States, string? Error)> ResolveMarketStatesAsync(string symbol);
 }
 
 public class TradingPlanRefreshService : ITradingPlanRefreshService
@@ -114,5 +119,49 @@ public class TradingPlanRefreshService : ITradingPlanRefreshService
         }
 
         return (true, $"Đã xếp hàng tạo plan mới (useAiStructure={useAiStructure}).");
+    }
+
+    public async Task<(Dictionary<string, MarketState>? States, string? Error)> ResolveMarketStatesAsync(string symbol)
+    {
+        var stored = await _marketDataStore.GetLatestStateAsync(symbol);
+        if (stored != null && stored.Count > 0)
+            return (stored, null);
+
+        var session = await _marketDataStore.GetSymbolSessionAsync(symbol);
+        if (session == null || session.Timeframes == null || session.Timeframes.Count == 0)
+            return (null, "Chưa có session/cấu trúc. Hãy /initialize trước, hoặc dùng system_prompt + tự dán data vào user_prompt.");
+
+        var states = new Dictionary<string, MarketState>();
+        foreach (var tf in session.Timeframes)
+        {
+            var cached = await _marketDataStore.GetCandlesAsync(symbol, tf);
+            if (cached == null || cached.Count == 0)
+                continue;
+
+            if (!Enum.TryParse<Timeframe>(tf, true, out var timeframeEnum))
+                continue;
+
+            var domainCandles = cached.Select(c => new Candle(
+                time: DateTimeOffset.FromUnixTimeSeconds(c.Time),
+                open: c.Open,
+                high: c.High,
+                low: c.Low,
+                close: c.Close,
+                volume: c.TickVolume,
+                emaFast: c.EmaFast,
+                emaSlow: c.EmaSlow,
+                rsi: c.Rsi,
+                adx: c.Adx,
+                atr: c.Atr
+            )).ToList();
+
+            states[tf] = _marketAnalyzer.Analyze(
+                new MarketAnalysisRequest(symbol, timeframeEnum, domainCandles));
+        }
+
+        if (states.Count == 0)
+            return (null, "Không có nến/cấu trúc trong store để nhúng vào prompt.");
+
+        return (states, null);
     }
 }

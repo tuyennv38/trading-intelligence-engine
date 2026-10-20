@@ -134,6 +134,48 @@ public class EaScenarioController : ControllerBase
     }
 
     /// <summary>
+    /// Lấy prompt Strategist (system + user đã nhúng data hiện có) để gọi AI bên ngoài,
+    /// rồi PUT JSON vào /api/v1/scenarios.
+    /// GET /api/v1/scenarios/prompt?symbol=XAUUSD
+    /// </summary>
+    [HttpGet("prompt")]
+    [ProducesResponseType(200)]
+    public async Task<IActionResult> GetStrategistPrompt(
+        [FromQuery] string symbol = "XAUUSD",
+        [FromQuery] string? triggerReason = null)
+    {
+        symbol = (symbol ?? "XAUUSD").Trim().ToUpperInvariant();
+        var (states, stateError) = await _planRefreshService.ResolveMarketStatesAsync(symbol);
+        var previousPlan = await _marketDataStore.GetLatestPlanAsync(symbol);
+        var reason = string.IsNullOrWhiteSpace(triggerReason)
+            ? "Xuất prompt để set kịch bản thủ công qua PUT /api/v1/scenarios"
+            : triggerReason.Trim();
+
+        var systemPrompt = TradingPlanPromptBuilder.GetSystemPrompt();
+        var userPrompt = TradingPlanPromptBuilder.BuildUserPrompt(symbol, states, previousPlan, reason);
+
+        return Ok(new
+        {
+            success = true,
+            has_data = states != null && states.Count > 0,
+            message = states != null && states.Count > 0
+                ? "Copy messages sang AI (json_object). JSON trả về PUT /api/v1/scenarios."
+                : stateError ?? "Chưa có data trong store. Vẫn dùng system_prompt; tự dán data vào user_prompt.",
+            symbol,
+            put_endpoint = TradingPlanPromptBuilder.PutEndpoint,
+            system_prompt = systemPrompt,
+            user_prompt = userPrompt,
+            messages = new[]
+            {
+                new { role = "system", content = systemPrompt },
+                new { role = "user", content = userPrompt }
+            },
+            json_sample = TradingPlanPromptBuilder.JsonSample(),
+            previous_signal_id = previousPlan?.SignalId ?? string.Empty
+        });
+    }
+
+    /// <summary>
     /// API 2: Lấy chi tiết kịch bản theo signal_id
     /// GET /api/v1/scenarios/{signalId}?symbol=XAUUSD
     /// </summary>

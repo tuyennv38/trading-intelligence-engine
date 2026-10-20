@@ -92,6 +92,9 @@ public class AiNotificationJob : IAiNotificationJob
 
             _logger.LogInformation("Hangfire Job: Bắt đầu gọi AI Strategist cho {Symbol}...", symbol);
 
+            await _notifier.SendMessageAsync(
+                $"⏳ *{symbol}*\nĐang chờ AI lên kịch bản chi tiết.");
+
             var previousPlan = await _marketDataStore.GetLatestPlanAsync(symbol);
             var tradingPlan = await _aiStrategist.GeneratePlanAsync(
                 symbol, states, previousPlan, triggerReason, CancellationToken.None);
@@ -167,7 +170,6 @@ public class AiNotificationJob : IAiNotificationJob
             msgBuilder.AppendLine();
         }
 
-        msgBuilder.AppendLine("⏳ *Đang chuyển dữ liệu cho AI (Giai đoạn 2) để lên Kịch bản chi tiết...*");
         await _notifier.SendMessageAsync(msgBuilder.ToString());
     }
 }
