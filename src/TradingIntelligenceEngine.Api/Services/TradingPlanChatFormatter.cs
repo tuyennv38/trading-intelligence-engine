@@ -36,7 +36,7 @@ public static class TradingPlanChatFormatter
         {
             sb.AppendLine("⛔ *KHUYẾN NGHỊ: ĐỨNG NGOÀI (NO TRADE)*");
             sb.AppendLine(noTradeHint
-                ?? "Dữ liệu/cấu trúc chưa đủ chuẩn để ra kịch bản. EA tiếp tục gửi nến, khi sẵn sàng hãy gọi refreshPlan.");
+                ?? "Đa khung chưa đồng pha / setup chưa rõ — không ép lệnh. EA cứ gửi nến mỗi phút; Hangfire sẽ tự hỏi lại AI sau 5 phút.");
         }
 
         return sb.ToString();
