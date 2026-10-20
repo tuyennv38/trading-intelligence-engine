@@ -17,6 +17,8 @@ public class InMemoryMarketDataStore : IMarketDataStore
         _cache = cache;
     }
 
+    private const string SessionIndexKey = "TradingSession_Index";
+
     private string GetCacheKey(string symbol, string timeframe) => $"MarketData_{symbol}_{timeframe}";
 
     public Task InitializeCandlesAsync(string symbol, string timeframe, List<RawCandleDto> candles)
@@ -121,7 +123,14 @@ public class InMemoryMarketDataStore : IMarketDataStore
     public Task SetSymbolSessionAsync(string symbol, SymbolTradingSession session)
     {
         var key = $"TradingSession_{symbol}";
-        lock (_lock) { _cache.Set(key, session); }
+        lock (_lock)
+        {
+            _cache.Set(key, session);
+            if (!_cache.TryGetValue(SessionIndexKey, out HashSet<string>? index) || index == null)
+                index = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            index.Add(symbol);
+            _cache.Set(SessionIndexKey, index);
+        }
         return Task.CompletedTask;
     }
 
@@ -133,6 +142,25 @@ public class InMemoryMarketDataStore : IMarketDataStore
             if (_cache.TryGetValue(key, out SymbolTradingSession? session))
                 return Task.FromResult(session);
             return Task.FromResult<SymbolTradingSession?>(null);
+        }
+    }
+
+    public Task<List<SymbolTradingSession>> ListSymbolSessionsAsync()
+    {
+        lock (_lock)
+        {
+            var result = new List<SymbolTradingSession>();
+            if (!_cache.TryGetValue(SessionIndexKey, out HashSet<string>? index) || index == null)
+                return Task.FromResult(result);
+
+            foreach (var symbol in index)
+            {
+                var key = $"TradingSession_{symbol}";
+                if (_cache.TryGetValue(key, out SymbolTradingSession? session) && session != null)
+                    result.Add(session);
+            }
+
+            return Task.FromResult(result);
         }
     }
 }

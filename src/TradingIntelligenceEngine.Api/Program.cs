@@ -124,6 +124,11 @@ app.UseSwaggerUI(c =>
 
 app.UseHangfireDashboard(); // Kích hoạt UI Dashboard theo dõi Background Job
 
+RecurringJob.AddOrUpdate<TradingIntelligenceEngine.Api.Services.ITradingPlanRefreshService>(
+    "retry-no-trade-plans",
+    service => service.RetryNoTradePlansAsync(),
+    "*/5 * * * *");
+
 app.UseAuthorization();
 app.MapControllers();
 

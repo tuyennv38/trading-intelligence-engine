@@ -50,4 +50,9 @@ public interface IMarketDataStore
     /// Lấy session trading theo symbol.
     /// </summary>
     Task<SymbolTradingSession?> GetSymbolSessionAsync(string symbol);
+
+    /// <summary>
+    /// Mọi session đã initialize (để Hangfire 5 phút retry NO TRADE).
+    /// </summary>
+    Task<List<SymbolTradingSession>> ListSymbolSessionsAsync();
 }

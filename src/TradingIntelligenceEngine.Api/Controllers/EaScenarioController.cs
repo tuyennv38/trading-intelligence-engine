@@ -38,10 +38,19 @@ public class EaScenarioController : ControllerBase
     [ProducesResponseType(200)]
     public async Task<IActionResult> GetLatestScenarioId([FromQuery] string symbol = "XAUUSD")
     {
+        var session = await _marketDataStore.GetSymbolSessionAsync(symbol);
         var plan = await _marketDataStore.GetLatestPlanAsync(symbol);
+        var lookingForPlan = session?.PlanRefreshInProgress == true;
+
         if (plan == null)
         {
-            return Ok(new { signal_id = string.Empty, has_scenarios = false, no_trade = true });
+            return Ok(new
+            {
+                signal_id = string.Empty,
+                has_scenarios = false,
+                no_trade = true,
+                looking_for_plan = lookingForPlan
+            });
         }
 
         if (string.IsNullOrEmpty(plan.SignalId))
@@ -57,7 +66,9 @@ public class EaScenarioController : ControllerBase
         {
             signal_id = plan.SignalId,
             has_scenarios = plan.HasScenarios,
-            no_trade = plan.HasNoTrade
+            no_trade = plan.HasNoTrade,
+            looking_for_plan = lookingForPlan,
+            source = plan.Source
         });
     }
 
