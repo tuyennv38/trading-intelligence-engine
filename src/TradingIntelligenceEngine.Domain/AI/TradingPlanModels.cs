@@ -27,8 +27,16 @@ public class TradingPlanResponse
     [JsonPropertyName("created_at")]
     public long CreatedAt { get; set; } = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
 
+    /// <summary>ai | manual — kịch bản do AI sinh hoặc người dùng set qua API.</summary>
+    [JsonPropertyName("source")]
+    public string Source { get; set; } = TradingPlanSource.Ai;
+
     [JsonIgnore]
     public bool HasScenarios => Scenarios != null && Scenarios.Count > 0;
+
+    [JsonIgnore]
+    public bool IsManual =>
+        string.Equals(Source, TradingPlanSource.Manual, StringComparison.OrdinalIgnoreCase);
 
     [JsonIgnore]
     public bool HasActiveScenario => Scenarios != null && Scenarios.Any(s => s.IsActive);
@@ -45,6 +53,8 @@ public class TradingPlanResponse
         SignalId = signalId;
         CreatedAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         Scenarios ??= new List<EaTradeScenario>();
+        if (string.IsNullOrWhiteSpace(Source))
+            Source = TradingPlanSource.Ai;
 
         for (int i = 0; i < Scenarios.Count; i++)
         {
@@ -58,6 +68,12 @@ public class TradingPlanResponse
                 s.Confirmation.Patterns ??= new List<string>();
         }
     }
+}
+
+public static class TradingPlanSource
+{
+    public const string Ai = "ai";
+    public const string Manual = "manual";
 }
 
 public static class EaScenarioStatus

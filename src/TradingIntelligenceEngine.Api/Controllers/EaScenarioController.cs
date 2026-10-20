@@ -1,8 +1,11 @@
 using System;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Logging;
 using TradingIntelligenceEngine.Api.Services;
+using TradingIntelligenceEngine.Application.DTOs.MarketData;
 using TradingIntelligenceEngine.Application.Interfaces;
+using TradingIntelligenceEngine.Domain.AI;
 
 namespace TradingIntelligenceEngine.Api.Controllers;
 
@@ -12,13 +15,19 @@ public class EaScenarioController : ControllerBase
 {
     private readonly IMarketDataStore _marketDataStore;
     private readonly ITradingPlanRefreshService _planRefreshService;
+    private readonly INotificationService _notifier;
+    private readonly ILogger<EaScenarioController> _logger;
 
     public EaScenarioController(
         IMarketDataStore marketDataStore,
-        ITradingPlanRefreshService planRefreshService)
+        ITradingPlanRefreshService planRefreshService,
+        INotificationService notifier,
+        ILogger<EaScenarioController> logger)
     {
         _marketDataStore = marketDataStore;
         _planRefreshService = planRefreshService;
+        _notifier = notifier;
+        _logger = logger;
     }
 
     /// <summary>
@@ -75,7 +84,24 @@ public class EaScenarioController : ControllerBase
                 looking_for_plan = false,
                 refresh_queued = false,
                 signal_id = plan.SignalId,
+                source = plan.Source,
                 plan
+            });
+        }
+
+        if (plan != null && plan.IsManual)
+        {
+            return Ok(new
+            {
+                success = true,
+                has_scenarios = false,
+                no_trade = true,
+                looking_for_plan = false,
+                refresh_queued = false,
+                signal_id = plan.SignalId,
+                source = plan.Source,
+                context = plan.Context,
+                message = "Kịch bản thủ công: NO TRADE. EA không tự gọi AI cho đến khi POST /scenarios/refresh hoặc set lại."
             });
         }
 
@@ -123,6 +149,75 @@ public class EaScenarioController : ControllerBase
         }
 
         return Ok(plan);
+    }
+
+    /// <summary>
+    /// Chủ động set kịch bản (thay plan AI). EA poll /current sẽ nhận plan này.
+    /// PUT hoặc POST /api/v1/scenarios
+    /// </summary>
+    [HttpPut]
+    [HttpPost]
+    [ProducesResponseType(200)]
+    [ProducesResponseType(400)]
+    public async Task<IActionResult> SetScenarios(
+        [FromBody] SetTradingPlanRequest request,
+        [FromQuery] bool? notify = null)
+    {
+        if (request == null)
+            return BadRequest(new { success = false, message = "Body không được rỗng." });
+
+        var plan = request.ToPlan();
+        var errors = TradingPlanValidator.Validate(plan);
+        if (errors.Count > 0)
+            return BadRequest(new { success = false, errors });
+
+        var symbol = plan.Symbol.Trim().ToUpperInvariant();
+        var signalId = string.IsNullOrWhiteSpace(request.SignalId)
+            ? $"{DateTime.UtcNow:yyyyMMddHHmmss}_{symbol}"
+            : request.SignalId.Trim();
+        plan.EnsureDefaults(symbol, signalId);
+        plan.Source = TradingPlanSource.Manual;
+
+        await _marketDataStore.SetLatestPlanAsync(symbol, plan);
+
+        var session = await _marketDataStore.GetSymbolSessionAsync(symbol);
+        if (session != null)
+        {
+            session.PlanRefreshInProgress = false;
+            await _marketDataStore.SetSymbolSessionAsync(symbol, session);
+        }
+
+        bool shouldNotify = notify ?? request.Notify;
+        bool notified = false;
+        if (shouldNotify)
+        {
+            try
+            {
+                var chat = TradingPlanChatFormatter.BuildPlanMessage(
+                    symbol,
+                    plan,
+                    "THỦ CÔNG",
+                    "Người dùng set NO TRADE. EA giữ nguyên cho đến khi refresh hoặc set lại.");
+                await _notifier.SendMessageAsync(chat);
+                notified = true;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Set kịch bản thủ công thành công nhưng gửi Google Chat thất bại.");
+            }
+        }
+
+        return Ok(new
+        {
+            success = true,
+            message = "Đã set kịch bản thủ công.",
+            notified,
+            signal_id = plan.SignalId,
+            source = plan.Source,
+            has_scenarios = plan.HasScenarios,
+            no_trade = plan.HasNoTrade,
+            plan
+        });
     }
 
     /// <summary>

@@ -4,6 +4,7 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
+using TradingIntelligenceEngine.Api.Services;
 using TradingIntelligenceEngine.Application.Interfaces;
 using TradingIntelligenceEngine.Domain.AI;
 using TradingIntelligenceEngine.Domain.MarketState;
@@ -54,6 +55,7 @@ public class AiNotificationJob : IAiNotificationJob
     {
         try
         {
+            var jobStartedAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
             Dictionary<string, MarketState> states;
 
             if (useAiStructure)
@@ -94,47 +96,27 @@ public class AiNotificationJob : IAiNotificationJob
             var tradingPlan = await _aiStrategist.GeneratePlanAsync(
                 symbol, states, previousPlan, triggerReason, CancellationToken.None);
 
+            var existing = await _marketDataStore.GetLatestPlanAsync(symbol);
+            if (existing != null && existing.IsManual && existing.CreatedAt >= jobStartedAt)
+            {
+                _logger.LogInformation(
+                    "Giữ kịch bản thủ công của {Symbol}, không ghi đè bằng AI.", symbol);
+                return;
+            }
+
             var signalId = $"{DateTime.UtcNow:yyyyMMddHHmmss}_{symbol.ToUpperInvariant()}";
             tradingPlan.EnsureDefaults(symbol, signalId);
+            tradingPlan.Source = TradingPlanSource.Ai;
 
-            var planMsgBuilder = new System.Text.StringBuilder();
-            planMsgBuilder.AppendLine($"🚨 *KẾ HOẠCH GIAO DỊCH {symbol} (AI STRATEGIST)* 🚨\n");
-            planMsgBuilder.AppendLine(useAiStructure
-                ? "Cấu trúc thị trường: AI\n"
-                : "Cấu trúc thị trường: Quant\n");
-
-            planMsgBuilder.AppendLine($"*BIAS:* {tradingPlan.Bias}");
-            planMsgBuilder.AppendLine($"*CONTEXT:* {tradingPlan.Context}\n");
-
-            var sellScenarios = tradingPlan.Scenarios.Where(s => s.IsSell).ToList();
-            var buyScenarios = tradingPlan.Scenarios.Where(s => s.IsBuy).ToList();
-
-            if (sellScenarios.Count > 0)
-            {
-                planMsgBuilder.AppendLine("🔴 *KỊCH BẢN BÁN (SELL)*");
-                foreach (var s in sellScenarios)
-                    AppendScenarioChatLines(planMsgBuilder, s, isBuy: false);
-                planMsgBuilder.AppendLine();
-            }
-
-            if (buyScenarios.Count > 0)
-            {
-                planMsgBuilder.AppendLine("🟢 *KỊCH BẢN MUA (BUY)*");
-                foreach (var s in buyScenarios)
-                    AppendScenarioChatLines(planMsgBuilder, s, isBuy: true);
-                planMsgBuilder.AppendLine();
-            }
-
-            if (!tradingPlan.HasScenarios)
-            {
-                planMsgBuilder.AppendLine("⛔ *KHUYẾN NGHỊ: ĐỨNG NGOÀI (NO TRADE)*");
-                planMsgBuilder.AppendLine("Dữ liệu/cấu trúc chưa đủ chuẩn để ra kịch bản. EA tiếp tục gửi nến, khi sẵn sàng hãy gọi refreshPlan.");
-            }
+            var origin = useAiStructure
+                ? "AI STRATEGIST — cấu trúc AI"
+                : "AI STRATEGIST — cấu trúc Quant";
+            var planMsg = TradingPlanChatFormatter.BuildPlanMessage(symbol, tradingPlan, origin);
 
             await _marketDataStore.SetLatestStateAsync(symbol, states);
             await _marketDataStore.SetLatestPlanAsync(symbol, tradingPlan);
 
-            await _notifier.SendMessageAsync(planMsgBuilder.ToString());
+            await _notifier.SendMessageAsync(planMsg);
             _logger.LogInformation("Hangfire Job: Hoàn thành tạo và gửi Kế hoạch giao dịch cho {Symbol}.", symbol);
         }
         catch (Exception ex)
@@ -152,76 +134,6 @@ public class AiNotificationJob : IAiNotificationJob
                 await _marketDataStore.SetSymbolSessionAsync(symbol, session);
             }
         }
-    }
-
-    private static void AppendScenarioChatLines(System.Text.StringBuilder sb, EaTradeScenario s, bool isBuy)
-    {
-        string bulletIcon = isBuy ? "🟢" : "🔴";
-        string displayName = string.IsNullOrWhiteSpace(s.Name) ? s.Id : s.Name;
-        sb.AppendLine($"• {displayName}:");
-
-        decimal refPrice;
-        if (s.IsBreakout)
-        {
-            refPrice = s.TriggerPrice ?? 0;
-            sb.AppendLine($"  {bulletIcon} Kích hoạt : {refPrice:0.00}");
-        }
-        else if (s.EntryZone != null)
-        {
-            refPrice = (s.EntryZone.Min + s.EntryZone.Max) / 2;
-            sb.AppendLine($"  {bulletIcon} Entry : {s.EntryZone.Min:0.00} - {s.EntryZone.Max:0.00}");
-        }
-        else
-        {
-            refPrice = 0;
-            sb.AppendLine($"  {bulletIcon} Entry : N/A");
-        }
-
-        decimal slPts = Math.Abs(refPrice - s.StopLoss);
-        sb.AppendLine($"  🛡  SL    : {s.StopLoss:0.00} (-{slPts:0.00} pts)");
-
-        if (s.TakeProfits != null && s.TakeProfits.Count > 0)
-        {
-            for (int i = 0; i < s.TakeProfits.Count; i++)
-            {
-                decimal tpValue = s.TakeProfits[i];
-                decimal tpPts = Math.Abs(tpValue - refPrice);
-                decimal rr = slPts > 0 ? tpPts / slPts : 0;
-                sb.AppendLine($"  🎯 TP{i + 1}   : {tpValue:0.00} (+{tpPts:0.00} pts) R:R 1:{rr:0.0}");
-            }
-        }
-        else
-        {
-            sb.AppendLine("  🎯 TP    : N/A");
-        }
-
-        string logic = !string.IsNullOrWhiteSpace(s.Logic)
-            ? s.Logic
-            : BuildFallbackLogic(s);
-        sb.AppendLine($"  💡 Logic : {logic}");
-    }
-
-    private static string BuildFallbackLogic(EaTradeScenario s)
-    {
-        var patterns = s.Confirmation?.Patterns != null && s.Confirmation.Patterns.Count > 0
-            ? string.Join(" hoặc ", s.Confirmation.Patterns)
-            : "mô hình nến xác nhận";
-        var tf = s.Confirmation?.Timeframe ?? "M15";
-
-        if (s.IsBreakout)
-        {
-            string side = s.IsBuy ? "Mua" : "Bán";
-            string cond = s.IsBuy ? "đóng cửa trên" : "đóng cửa dưới";
-            return $"Chờ nến {tf} {cond} mức kích hoạt {s.TriggerPrice:0.00}, xác nhận bằng {patterns} rồi {side} theo breakout.";
-        }
-
-        if (s.EntryZone != null)
-        {
-            string side = s.IsBuy ? "Mua" : "Bán";
-            return $"Chờ giá vào vùng {s.EntryZone.Min:0.00}-{s.EntryZone.Max:0.00} và xuất hiện {patterns} trên {tf} rồi {side}.";
-        }
-
-        return s.Name;
     }
 
     private async Task NotifyStructureSummaryAsync(string symbol, Dictionary<string, MarketState> states, bool fromAi)
