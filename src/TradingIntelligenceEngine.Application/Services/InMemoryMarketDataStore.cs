@@ -33,7 +33,7 @@ public class InMemoryMarketDataStore : IMarketDataStore
         return Task.CompletedTask;
     }
 
-    public Task AppendCandleAsync(string symbol, string timeframe, RawCandleDto newCandle, int maxCapacity = 1000)
+    public Task AppendCandleAsync(string symbol, string timeframe, RawCandleDto newCandle, int maxCapacity = 100)
     {
         var key = GetCacheKey(symbol, timeframe);
 

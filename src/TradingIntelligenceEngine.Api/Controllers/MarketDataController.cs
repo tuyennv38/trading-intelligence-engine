@@ -144,12 +144,18 @@ public class MarketDataController : ControllerBase
                 return BadRequest(new { success = false, message = "Không có timeframe hợp lệ nào." });
             }
 
+            var capacities = request.Timeframes
+                .Where(kv => kv.Value != null && kv.Value.Count > 0 && candlesByTimeframe.ContainsKey(kv.Key))
+                .ToDictionary(kv => kv.Key, kv => kv.Value.Count, StringComparer.OrdinalIgnoreCase);
+
             await _marketDataStore.SetSymbolSessionAsync(request.Symbol, new SymbolTradingSession
             {
                 Symbol = request.Symbol,
                 UseAiStructure = request.UseAiStructure,
                 Timeframes = candlesByTimeframe.Keys.ToList(),
-                PlanRefreshInProgress = true
+                PlanRefreshInProgress = true,
+                CandleCapacityByTimeframe = capacities,
+                MaxInitCandleCount = SymbolTradingSession.MaxCount(capacities.Values)
             });
 
             if (request.UseAiStructure)
@@ -247,9 +253,46 @@ public class MarketDataController : ControllerBase
 
         try
         {
+            var session = await _marketDataStore.GetSymbolSessionAsync(request.Symbol);
+            bool recoveredWithoutInit = session == null;
+            if (session == null)
+            {
+                session = new SymbolTradingSession
+                {
+                    Symbol = request.Symbol,
+                    UseAiStructure = false,
+                    Timeframes = request.Timeframes.Keys.ToList(),
+                    MaxInitCandleCount = 0,
+                    CandleCapacityByTimeframe = request.Timeframes.Keys.ToDictionary(
+                        k => k, _ => SymbolTradingSession.LostHistoryCapacity, StringComparer.OrdinalIgnoreCase)
+                };
+                await _marketDataStore.SetSymbolSessionAsync(request.Symbol, session);
+            }
+            else
+            {
+                foreach (var tf in request.Timeframes.Keys)
+                {
+                    if (!session.Timeframes.Contains(tf, StringComparer.OrdinalIgnoreCase))
+                        session.Timeframes.Add(tf);
+                    if (!session.CandleCapacityByTimeframe.ContainsKey(tf))
+                    {
+                        session.CandleCapacityByTimeframe[tf] = session.MaxInitCandleCount > 0
+                            ? session.MaxInitCandleCount
+                            : SymbolTradingSession.LostHistoryCapacity;
+                    }
+                }
+                await _marketDataStore.SetSymbolSessionAsync(request.Symbol, session);
+            }
+
+            var candleCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            var candleCapacities = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
             foreach (var tfData in request.Timeframes)
             {
-                await _marketDataStore.AppendCandleAsync(request.Symbol, tfData.Key, tfData.Value);
+                var capacity = session.ResolveCandleCapacity(tfData.Key);
+                await _marketDataStore.AppendCandleAsync(request.Symbol, tfData.Key, tfData.Value, capacity);
+                var stored = await _marketDataStore.GetCandlesAsync(request.Symbol, tfData.Key);
+                candleCounts[tfData.Key] = stored.Count;
+                candleCapacities[tfData.Key] = capacity;
             }
 
             var latestPlan = await _marketDataStore.GetLatestPlanAsync(request.Symbol);
@@ -270,10 +313,15 @@ public class MarketDataController : ControllerBase
                 success = true,
                 message = request.RefreshPlan
                     ? (refreshQueued ? refreshMessage : "Cập nhật nến OK nhưng không queue được plan mới: " + refreshMessage)
-                    : "Cập nhật nến thành công. Không tạo plan mới (refreshPlan=false).",
+                    : recoveredWithoutInit
+                        ? "Chưa có lịch sử init — đang tích nến từ update (tối đa 100/khung, đầy thì xóa cây đầu)."
+                        : "Cập nhật nến thành công. Không tạo plan mới (refreshPlan=false).",
                 refresh_plan = request.RefreshPlan,
                 refresh_queued = refreshQueued,
-                signal_id = latestPlan?.SignalId ?? string.Empty
+                signal_id = latestPlan?.SignalId ?? string.Empty,
+                recovered_without_init = recoveredWithoutInit,
+                candle_counts = candleCounts,
+                candle_capacities = candleCapacities
             });
         }
         catch (Exception ex)

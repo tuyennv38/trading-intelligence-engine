@@ -14,7 +14,7 @@ public interface IMarketDataStore
     /// <summary>
     /// Nạp thêm 1 nến mới vào cuối mảng, và đẩy nến cũ nhất ra ngoài để duy trì Capacity
     /// </summary>
-    Task AppendCandleAsync(string symbol, string timeframe, RawCandleDto newCandle, int maxCapacity = 1000);
+    Task AppendCandleAsync(string symbol, string timeframe, RawCandleDto newCandle, int maxCapacity = 100);
 
     /// <summary>
     /// Lấy toàn bộ nến hiện tại đang lưu trong bộ nhớ
