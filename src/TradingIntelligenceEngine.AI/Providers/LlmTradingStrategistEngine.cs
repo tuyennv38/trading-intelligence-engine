@@ -169,8 +169,12 @@ TYPE:
 - patterns: token EA (BULLISH_PINBAR, BEARISH_ENGULFING, ...).
 
 TRADING:
-1. Không bịa giá — dùng đúng BOS/CHOCH/liquidity.
-2. Không setup rõ => scenarios = [].
+1. NO TRADE LÀ KẾT QUẢ HỢP LỆ (ưu tiên khi chưa chắc). Trả ""scenarios"": [] khi:
+   - Dữ liệu mới init / chưa đủ nến / cấu trúc chưa rõ.
+   - Đa khung mâu thuẫn, sideway hẹp, hoặc chưa có vùng S/R chất lượng.
+   - Phải bịa giá / làm tròn / setup gượng thì ĐỪNG ra kịch bản.
+   Khi NO TRADE: bias có thể Neutral, context giải thích tiếng Việt vì sao đứng ngoài và cần chờ gì (ví dụ: chờ H4 đóng, chờ retest, chờ CHOCH).
+2. Chỉ ra kịch bản khi setup RÕ, giá lấy đúng BOS/CHOCH/liquidity — không bịa số.
 3. Không tạo kịch bản ngược chiều đè cùng 1 mức (tránh hedging).
 4. Mỗi kịch bản: 1 sl + 3 tps; zone rộng >= 3; SL cách mép zone 5..10; TP cách nhau >= 5; TP1 RR >= 1:1.
 5. Không gửi signal_id (server gán).";
@@ -186,6 +190,7 @@ TRADING:
         sb.AppendLine($"Lập kế hoạch giao dịch EA cho cặp {symbol}.");
         sb.AppendLine("Trả JSON snake_case theo schema (symbol, bias, context, scenarios).");
         sb.AppendLine("context, name, logic phải là TIẾNG VIỆT chi tiết.");
+        sb.AppendLine("Nếu chưa đủ điều kiện giao dịch: scenarios phải là mảng rỗng []. Không bịa kịch bản cho có.");
 
         if (!string.IsNullOrWhiteSpace(triggerReason))
         {
@@ -223,7 +228,7 @@ TRADING:
             }
         }
 
-        sb.AppendLine("\nTrích Entry/SL/TP từ giá sự kiện và thanh khoản ở trên. Chỉ trả JSON, bắt đầu bằng '{'.");
+        sb.AppendLine("\nChỉ trích Entry/SL/TP khi setup đủ chuẩn từ giá sự kiện/thanh khoản. Nếu chưa rõ: scenarios=[]. Chỉ trả JSON, bắt đầu bằng '{'.");
         return sb.ToString();
     }
 }

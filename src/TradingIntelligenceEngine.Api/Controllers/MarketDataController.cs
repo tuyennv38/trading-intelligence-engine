@@ -148,7 +148,8 @@ public class MarketDataController : ControllerBase
             {
                 Symbol = request.Symbol,
                 UseAiStructure = request.UseAiStructure,
-                Timeframes = candlesByTimeframe.Keys.ToList()
+                Timeframes = candlesByTimeframe.Keys.ToList(),
+                PlanRefreshInProgress = true
             });
 
             if (request.UseAiStructure)
@@ -246,124 +247,15 @@ public class MarketDataController : ControllerBase
 
         try
         {
-            // 1) Luôn cập nhật nến
             foreach (var tfData in request.Timeframes)
             {
                 await _marketDataStore.AppendCandleAsync(request.Symbol, tfData.Key, tfData.Value);
             }
 
-            // 2) Cập nhật trạng thái scenario (ACTIVE / HIT_SL / HIT_TP) — không tự sinh plan mới
             var latestPlan = await _marketDataStore.GetLatestPlanAsync(request.Symbol);
-            string statusNote = "";
-            bool planUpdated = false;
-
-            if (latestPlan != null)
-            {
-                var smallestTfKey = request.Timeframes.Keys
-                    .OrderBy(k => Enum.TryParse<Timeframe>(k, true, out var tf) ? (int)tf : 99)
-                    .FirstOrDefault();
-
-                decimal maxHigh = 0;
-                decimal minLow = 0;
-                decimal currentPrice = 0;
-
-                if (smallestTfKey != null)
-                {
-                    var triggerCandle = request.Timeframes[smallestTfKey];
-                    maxHigh = triggerCandle.High;
-                    minLow = triggerCandle.Low;
-                    currentPrice = triggerCandle.Close;
-                }
-
-                var justActivatedIds = new HashSet<string>();
-                latestPlan.Scenarios ??= new List<EaTradeScenario>();
-                bool isAnyScenarioActive = latestPlan.HasActiveScenario;
-
-                if (!isAnyScenarioActive && currentPrice > 0)
-                {
-                    foreach (var scenario in latestPlan.Scenarios)
-                    {
-                        if (isAnyScenarioActive)
-                            break;
-
-                        bool shouldActivate = false;
-                        if (scenario.IsReversal && scenario.EntryZone != null)
-                        {
-                            if (scenario.IsBuy && currentPrice <= scenario.EntryZone.Max)
-                                shouldActivate = true;
-                            else if (scenario.IsSell && currentPrice >= scenario.EntryZone.Min)
-                                shouldActivate = true;
-                        }
-                        else if (scenario.IsBreakout && scenario.TriggerPrice.HasValue)
-                        {
-                            if (scenario.IsBuy && currentPrice >= scenario.TriggerPrice.Value)
-                                shouldActivate = true;
-                            else if (scenario.IsSell && currentPrice <= scenario.TriggerPrice.Value)
-                                shouldActivate = true;
-                        }
-
-                        if (!shouldActivate)
-                            continue;
-
-                        scenario.Status = EaScenarioStatus.Active;
-                        planUpdated = true;
-                        justActivatedIds.Add(scenario.Id);
-                        isAnyScenarioActive = true;
-                        statusNote = $"Scenario [{scenario.Id}] chuyển ACTIVE.";
-                    }
-                }
-
-                if (currentPrice > 0)
-                {
-                    foreach (var scenario in latestPlan.Scenarios.Where(s => s.IsActive).ToList())
-                    {
-                        bool justActivated = justActivatedIds.Contains(scenario.Id);
-                        bool hitSl = scenario.IsBuy
-                            ? (justActivated ? currentPrice <= scenario.StopLoss : minLow <= scenario.StopLoss)
-                            : (justActivated ? currentPrice >= scenario.StopLoss : maxHigh >= scenario.StopLoss);
-
-                        if (hitSl)
-                        {
-                            scenario.Status = EaScenarioStatus.HitSl;
-                            planUpdated = true;
-                            statusNote = $"Giá cắn SL ({scenario.StopLoss}) của [{scenario.Id}]. EA nên refreshPlan khi sẵn sàng.";
-                            await _notificationService.SendMessageAsync(
-                                $"⚠️ *{request.Symbol}* cắn SL kịch bản `{scenario.Id}` — chờ EA xin plan mới (refreshPlan=true).");
-                            break;
-                        }
-
-                        if (scenario.TakeProfits == null || scenario.TakeProfits.Count == 0)
-                            continue;
-
-                        decimal finalTp = scenario.IsBuy
-                            ? scenario.TakeProfits.Max()
-                            : scenario.TakeProfits.Min();
-
-                        bool hitFullTp = scenario.IsBuy
-                            ? (justActivated ? currentPrice >= finalTp : maxHigh >= finalTp)
-                            : (justActivated ? currentPrice <= finalTp : minLow <= finalTp);
-
-                        if (hitFullTp)
-                        {
-                            scenario.Status = EaScenarioStatus.HitTp;
-                            planUpdated = true;
-                            statusNote = $"Giá đạt full TP ({finalTp}) của [{scenario.Id}]. EA nên refreshPlan khi sẵn sàng.";
-                            await _notificationService.SendMessageAsync(
-                                $"🎉 *{request.Symbol}* full TP kịch bản `{scenario.Id}` — chờ EA xin plan mới (refreshPlan=true).");
-                            break;
-                        }
-                    }
-                }
-
-                if (planUpdated)
-                    await _marketDataStore.SetLatestPlanAsync(request.Symbol, latestPlan);
-            }
-
-            bool needsRefresh = latestPlan == null || latestPlan.NeedsRefresh;
             bool refreshQueued = false;
             string refreshMessage = "";
 
-            // 3) Chỉ khi EA chủ động xin plan mới
             if (request.RefreshPlan)
             {
                 var (queued, message) = await _planRefreshService.EnqueueRefreshAsync(
@@ -381,9 +273,7 @@ public class MarketDataController : ControllerBase
                     : "Cập nhật nến thành công. Không tạo plan mới (refreshPlan=false).",
                 refresh_plan = request.RefreshPlan,
                 refresh_queued = refreshQueued,
-                needs_refresh = needsRefresh,
-                signal_id = latestPlan?.SignalId ?? string.Empty,
-                status_note = statusNote
+                signal_id = latestPlan?.SignalId ?? string.Empty
             });
         }
         catch (Exception ex)

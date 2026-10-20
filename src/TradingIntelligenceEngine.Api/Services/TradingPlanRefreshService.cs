@@ -47,6 +47,12 @@ public class TradingPlanRefreshService : ITradingPlanRefreshService
             return (false, "Chưa có session initialize. Hãy gọi /initialize trước.");
         }
 
+        if (session.PlanRefreshInProgress)
+            return (false, "AI đang tìm kịch bản. EA tiếp tục update nến, poll lại sau.");
+
+        session.PlanRefreshInProgress = true;
+        await _marketDataStore.SetSymbolSessionAsync(symbol, session);
+
         var useAiStructure = session.UseAiStructure;
         var candlesByTimeframe = new Dictionary<string, List<AiCandleInput>>();
         var analysisResults = new Dictionary<string, MarketState>();
@@ -83,7 +89,11 @@ public class TradingPlanRefreshService : ITradingPlanRefreshService
         }
 
         if (candlesByTimeframe.Count == 0)
+        {
+            session.PlanRefreshInProgress = false;
+            await _marketDataStore.SetSymbolSessionAsync(symbol, session);
             return (false, "Không có nến trong store để refresh plan.");
+        }
 
         _logger.LogInformation(
             "Queue plan refresh for {Symbol}. useAiStructure={UseAi}. Reason={Reason}",

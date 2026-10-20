@@ -32,7 +32,7 @@ public class EaScenarioController : ControllerBase
         var plan = await _marketDataStore.GetLatestPlanAsync(symbol);
         if (plan == null)
         {
-            return Ok(new { signal_id = string.Empty, needs_refresh = true });
+            return Ok(new { signal_id = string.Empty, has_scenarios = false, no_trade = true });
         }
 
         if (string.IsNullOrEmpty(plan.SignalId))
@@ -47,7 +47,63 @@ public class EaScenarioController : ControllerBase
         return Ok(new
         {
             signal_id = plan.SignalId,
-            needs_refresh = plan.NeedsRefresh
+            has_scenarios = plan.HasScenarios,
+            no_trade = plan.HasNoTrade
+        });
+    }
+
+    /// <summary>
+    /// EA poll mỗi 5 phút: nếu đã có kịch bản thì trả về; nếu chưa (NO TRADE / chưa xong init)
+    /// thì xếp hàng AI tìm kịch bản trên nến đã update.
+    /// GET /api/v1/scenarios/current?symbol=XAUUSD
+    /// </summary>
+    [HttpGet("current")]
+    [ProducesResponseType(200)]
+    public async Task<IActionResult> GetCurrentScenarios([FromQuery] string symbol = "XAUUSD")
+    {
+        var session = await _marketDataStore.GetSymbolSessionAsync(symbol);
+        var plan = await _marketDataStore.GetLatestPlanAsync(symbol);
+        var lookingForPlan = session?.PlanRefreshInProgress == true;
+
+        if (plan != null && plan.HasScenarios)
+        {
+            return Ok(new
+            {
+                success = true,
+                has_scenarios = true,
+                no_trade = false,
+                looking_for_plan = false,
+                refresh_queued = false,
+                signal_id = plan.SignalId,
+                plan
+            });
+        }
+
+        bool refreshQueued = false;
+        string message = lookingForPlan
+            ? "AI đang tìm kịch bản. EA tiếp tục update nến mỗi phút, gọi lại sau 5 phút."
+            : "Chưa có kịch bản. Đang để AI tìm trên dữ liệu nến đã tích lũy.";
+
+        if (!lookingForPlan)
+        {
+            var (queued, refreshMessage) = await _planRefreshService.EnqueueRefreshAsync(
+                symbol, "EA poll /scenarios/current — chưa có kịch bản, tìm lại");
+            refreshQueued = queued;
+            lookingForPlan = queued || lookingForPlan;
+            if (!string.IsNullOrWhiteSpace(refreshMessage))
+                message = refreshMessage;
+        }
+
+        return Ok(new
+        {
+            success = true,
+            has_scenarios = false,
+            no_trade = plan == null || plan.HasNoTrade,
+            looking_for_plan = lookingForPlan,
+            refresh_queued = refreshQueued,
+            signal_id = plan?.SignalId ?? string.Empty,
+            context = plan?.Context,
+            message
         });
     }
 
@@ -70,7 +126,7 @@ public class EaScenarioController : ControllerBase
     }
 
     /// <summary>
-    /// EA xin sinh kịch bản mới khi đã xong plan hiện tại (SL/TP/hết PENDING).
+    /// EA xin sinh kịch bản mới khi tự xác định plan hiện tại đã xong (hết lệnh / hết vùng canh).
     /// Giữ nguyên mode useAiStructure lúc initialize.
     /// POST /api/v1/scenarios/refresh?symbol=XAUUSD
     /// </summary>

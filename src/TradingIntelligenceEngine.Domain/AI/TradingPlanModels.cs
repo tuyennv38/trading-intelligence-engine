@@ -34,21 +34,10 @@ public class TradingPlanResponse
     public bool HasActiveScenario => Scenarios != null && Scenarios.Any(s => s.IsActive);
 
     /// <summary>
-    /// true khi không còn scenario PENDING/ACTIVE — EA nên xin plan mới (refreshPlan).
+    /// Plan rỗng (NO TRADE) vẫn là plan hợp lệ — EA tiếp tục gửi nến, sau đó tự refresh khi muốn hỏi lại.
     /// </summary>
     [JsonIgnore]
-    public bool NeedsRefresh
-    {
-        get
-        {
-            if (Scenarios == null || Scenarios.Count == 0)
-                return true;
-
-            return !Scenarios.Any(s =>
-                string.Equals(s.Status, EaScenarioStatus.Pending, StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(s.Status, EaScenarioStatus.Active, StringComparison.OrdinalIgnoreCase));
-        }
-    }
+    public bool HasNoTrade => Scenarios == null || Scenarios.Count == 0;
 
     public void EnsureDefaults(string symbol, string signalId)
     {

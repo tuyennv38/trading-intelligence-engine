@@ -128,7 +128,7 @@ public class AiNotificationJob : IAiNotificationJob
             if (!tradingPlan.HasScenarios)
             {
                 planMsgBuilder.AppendLine("⛔ *KHUYẾN NGHỊ: ĐỨNG NGOÀI (NO TRADE)*");
-                planMsgBuilder.AppendLine("Thị trường hiện tại không có setup an toàn. Vui lòng bảo vệ vốn.");
+                planMsgBuilder.AppendLine("Dữ liệu/cấu trúc chưa đủ chuẩn để ra kịch bản. EA tiếp tục gửi nến, khi sẵn sàng hãy gọi refreshPlan.");
             }
 
             await _marketDataStore.SetLatestStateAsync(symbol, states);
@@ -142,6 +142,15 @@ public class AiNotificationJob : IAiNotificationJob
             _logger.LogError(ex, "Lỗi Hangfire Job khi gọi AI Strategist.");
             await _notifier.SendMessageAsync($"⚠️ Lỗi tạo Kế hoạch cho {symbol}: {ex.Message}");
             throw;
+        }
+        finally
+        {
+            var session = await _marketDataStore.GetSymbolSessionAsync(symbol);
+            if (session != null)
+            {
+                session.PlanRefreshInProgress = false;
+                await _marketDataStore.SetSymbolSessionAsync(symbol, session);
+            }
         }
     }
 
