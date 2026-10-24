@@ -26,7 +26,7 @@ QUY TẮC OUTPUT:
 - Chỉ trả về ĐÚNG 1 JSON object (snake_case).
 - Không markdown, không text ngoài JSON. Ký tự đầu phải là '{'.
 - context, name, logic BẮT BUỘC viết bằng TIẾNG VIỆT, mô tả chi tiết, rõ ràng.
-- type / confirmation.condition / patterns / status giữ token tiếng Anh như schema.
+- type / confirmation.condition / retest.condition / patterns / status giữ token tiếng Anh như schema.
 - JSON này copy được thẳng vào PUT /api/v1/scenarios (chỉ symbol, bias, context, scenarios).
 - Không gửi signal_id, source, created_at, notify (server/API gán).
 
@@ -55,7 +55,7 @@ SCHEMA:
       ""id"": ""scenario_sell_breakout_4111"",
       ""type"": ""BREAKOUT_SELL"",
       ""name"": ""Breakdown thủng hỗ trợ cứng 4111"",
-      ""logic"": ""Chờ nến M15 đóng cửa dứt khoát dưới 4110.677 rồi Bán theo breakout, không đuổi nếu wick giả."",
+      ""logic"": ""Chờ nến M15 đóng cửa dứt khoát dưới 4110.677. Không đuổi. Chờ giá hồi retest M5 về 4110.677 rồi nến M5 Bearish Engulfing/Pinbar tiếp diễn mới Bán."",
       ""trigger_price"": 4110.677,
       ""sl"": 4120.677,
       ""tps"": [4090.0, 4070.0, 4050.0],
@@ -64,14 +64,22 @@ SCHEMA:
         ""timeframe"": ""M15"",
         ""patterns"": [""STRONG_BEARISH_MARUBOZU""]
       },
+      ""retest"": {
+        ""timeframe"": ""M5"",
+        ""condition"": ""RETEST_THEN_CONTINUE"",
+        ""patterns"": [""BEARISH_PINBAR"", ""BEARISH_ENGULFING""]
+      },
       ""status"": ""PENDING""
     }
   ]
 }
 
 TYPE:
-- REVERSAL_BUY / REVERSAL_SELL: bắt buộc entry_zone; không cần trigger_price.
-- BREAKOUT_BUY / BREAKOUT_SELL: bắt buộc trigger_price; không cần entry_zone.
+- REVERSAL_BUY / REVERSAL_SELL: bắt buộc entry_zone; không cần trigger_price; retest = null.
+- BREAKOUT_BUY / BREAKOUT_SELL: bắt buộc trigger_price; không cần entry_zone; BẮT BUỘC object retest.
+- confirmation.timeframe = nến xác nhận phá vỡ. Không vào lệnh ngay khi phá.
+- retest.timeframe = ĐÚNG 1 BẬC NHỎ HƠN confirmation.timeframe theo thang M1 < M5 < M15 < H1 < H4 < D1 (chờ hồi về trigger rồi nến tiếp diễn trên khung đó mới vào). Ví dụ: M15 => M5; M5 => M1; H1 => M15; H4 => H1. Confirm M1 thì retest M1. Không dùng cùng khung (trừ M1).
+- retest.condition luôn RETEST_THEN_CONTINUE.
 - confirmation.condition: REVERSAL_* => PRICE_IN_ZONE; BREAKOUT_BUY => CLOSE_ABOVE_TRIGGER; BREAKOUT_SELL => CLOSE_BELOW_TRIGGER.
 - status mới = PENDING.
 - patterns: token EA (BULLISH_PINBAR, BEARISH_ENGULFING, ...).
@@ -172,6 +180,28 @@ TRADING:
                         condition = "PRICE_IN_ZONE",
                         timeframe = "M15",
                         patterns = new[] { "BEARISH_ENGULFING", "BEARISH_PINBAR" }
+                    },
+                    status = "PENDING"
+                },
+                new
+                {
+                    type = "BREAKOUT_SELL",
+                    name = "Bán phá vỡ đáy M15, chờ retest M5",
+                    logic = "Chờ M15 đóng dưới trigger. Không đuổi. Chờ M5 hồi về trigger rồi nến tiếp diễn mới bán.",
+                    trigger_price = 4148.00m,
+                    sl = 4158.00m,
+                    tps = new[] { 4135.00m, 4120.00m, 4095.00m },
+                    confirmation = new
+                    {
+                        condition = "CLOSE_BELOW_TRIGGER",
+                        timeframe = "M15",
+                        patterns = new[] { "STRONG_BEARISH_MARUBOZU", "BEARISH_ENGULFING" }
+                    },
+                    retest = new
+                    {
+                        timeframe = "M5",
+                        condition = "RETEST_THEN_CONTINUE",
+                        patterns = new[] { "BEARISH_PINBAR", "BEARISH_ENGULFING" }
                     },
                     status = "PENDING"
                 }

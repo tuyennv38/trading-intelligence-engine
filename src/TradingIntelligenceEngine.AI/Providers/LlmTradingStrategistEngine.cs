@@ -95,6 +95,8 @@ public class LlmTradingStrategistEngine : ITradingStrategistEngine
                 s.TakeProfits ??= new List<decimal>();
                 if (s.Confirmation != null)
                     s.Confirmation.Patterns ??= new List<string>();
+                if (s.Retest != null)
+                    s.Retest.Patterns ??= new List<string>();
             }
 
             return plan;

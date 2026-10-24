@@ -53,6 +53,10 @@ public static class TradingPlanChatFormatter
         {
             refPrice = s.TriggerPrice ?? 0;
             sb.AppendLine($"  {bulletIcon} Kích hoạt : {refPrice:0.00}");
+            var confirmTf = s.Confirmation?.Timeframe ?? "M15";
+            var retestTf = s.Retest?.Timeframe ?? ScenarioRetest.DefaultTimeframe(confirmTf);
+            sb.AppendLine($"  ⏱  Confirm : nến {confirmTf} đóng phá trigger");
+            sb.AppendLine($"  🔁 Retest  : khung {retestTf} hồi về trigger rồi xác nhận tiếp diễn mới vào");
         }
         else if (s.EntryZone != null)
         {
@@ -100,7 +104,11 @@ public static class TradingPlanChatFormatter
         {
             string side = s.IsBuy ? "Mua" : "Bán";
             string cond = s.IsBuy ? "đóng cửa trên" : "đóng cửa dưới";
-            return $"Chờ nến {tf} {cond} mức kích hoạt {s.TriggerPrice:0.00}, xác nhận bằng {patterns} rồi {side} theo breakout.";
+            var retestTf = s.Retest?.Timeframe ?? ScenarioRetest.DefaultTimeframe(tf);
+            var retestPatterns = s.Retest?.Patterns != null && s.Retest.Patterns.Count > 0
+                ? string.Join(" hoặc ", s.Retest.Patterns)
+                : "nến tiếp diễn";
+            return $"Chờ nến {tf} {cond} {s.TriggerPrice:0.00} ({patterns}). Không đuổi. Chờ retest {retestTf} về mức phá vỡ, xác nhận {retestPatterns} rồi {side}.";
         }
 
         if (s.EntryZone != null)

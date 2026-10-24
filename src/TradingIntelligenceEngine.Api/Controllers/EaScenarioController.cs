@@ -220,16 +220,16 @@ public class EaScenarioController : ControllerBase
             return BadRequest(new { success = false, message = "Body không được rỗng." });
 
         var plan = request.ToPlan();
-        var errors = TradingPlanValidator.Validate(plan);
-        if (errors.Count > 0)
-            return BadRequest(new { success = false, errors });
-
-        var symbol = plan.Symbol.Trim().ToUpperInvariant();
+        var symbol = string.IsNullOrWhiteSpace(plan.Symbol) ? "XAUUSD" : plan.Symbol.Trim().ToUpperInvariant();
         var signalId = string.IsNullOrWhiteSpace(request.SignalId)
             ? $"{DateTime.UtcNow:yyyyMMddHHmmss}_{symbol}"
             : request.SignalId.Trim();
         plan.EnsureDefaults(symbol, signalId);
         plan.Source = TradingPlanSource.Manual;
+
+        var errors = TradingPlanValidator.Validate(plan);
+        if (errors.Count > 0)
+            return BadRequest(new { success = false, errors });
 
         await _marketDataStore.SetLatestPlanAsync(symbol, plan);
 

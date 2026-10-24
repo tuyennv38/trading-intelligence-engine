@@ -44,8 +44,13 @@ public static class TradingPlanValidator
                     errors.Add($"{prefix}.entry_zone.min phải <= max.");
             }
 
-            if (s.IsBreakout && (!s.TriggerPrice.HasValue || s.TriggerPrice.Value <= 0))
-                errors.Add($"{prefix}.trigger_price bắt buộc với BREAKOUT_*.");
+            if (s.IsBreakout)
+            {
+                if (!s.TriggerPrice.HasValue || s.TriggerPrice.Value <= 0)
+                    errors.Add($"{prefix}.trigger_price bắt buộc với BREAKOUT_*.");
+                if (s.Retest == null || string.IsNullOrWhiteSpace(s.Retest.Timeframe))
+                    errors.Add($"{prefix}.retest.timeframe bắt buộc với BREAKOUT_* (khung chờ hồi về mức phá vỡ, ví dụ M5).");
+            }
         }
 
         return errors;

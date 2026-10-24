@@ -66,6 +66,15 @@ public class TradingPlanResponse
             s.TakeProfits ??= new List<decimal>();
             if (s.Confirmation != null)
                 s.Confirmation.Patterns ??= new List<string>();
+
+            if (s.IsBreakout)
+            {
+                s.Retest ??= new ScenarioRetest();
+                s.Retest.Timeframe = ScenarioRetest.OneStepSmaller(s.Confirmation?.Timeframe);
+                if (string.IsNullOrWhiteSpace(s.Retest.Condition))
+                    s.Retest.Condition = EaRetestCondition.RetestThenContinue;
+                s.Retest.Patterns ??= new List<string>();
+            }
         }
     }
 }
@@ -126,6 +135,13 @@ public class EaTradeScenario
     [JsonPropertyName("confirmation")]
     public ScenarioConfirmation? Confirmation { get; set; }
 
+    /// <summary>
+    /// Bắt buộc với BREAKOUT_*: khung nhỏ hơn confirmation để chờ hồi về mức phá vỡ rồi xác nhận tiếp diễn.
+    /// REVERSAL_* để null.
+    /// </summary>
+    [JsonPropertyName("retest")]
+    public ScenarioRetest? Retest { get; set; }
+
     /// <summary>PENDING | ACTIVE | HIT_SL | HIT_TP | CANCELLED</summary>
     [JsonPropertyName("status")]
     public string Status { get; set; } = EaScenarioStatus.Pending;
@@ -165,11 +181,70 @@ public class ScenarioConfirmation
     [JsonPropertyName("condition")]
     public string Condition { get; set; } = string.Empty;
 
+    /// <summary>Khung nến xác nhận phá vỡ / vào vùng (ví dụ M15).</summary>
     [JsonPropertyName("timeframe")]
     public string Timeframe { get; set; } = "M15";
 
     [JsonPropertyName("patterns")]
     public List<string> Patterns { get; set; } = new();
+}
+
+public static class EaRetestCondition
+{
+    /// <summary>Giá hồi về trigger, nến khung retest xác nhận tiếp diễn rồi mới vào lệnh.</summary>
+    public const string RetestThenContinue = "RETEST_THEN_CONTINUE";
+}
+
+/// <summary>
+/// BREAKOUT: confirm TF đóng cửa phá trigger, rồi chờ retest TF nhỏ hơn (ví dụ confirm M15, retest M5).
+/// </summary>
+public class ScenarioRetest
+{
+    /// <summary>Khung chờ hồi về mức phá vỡ (nhỏ hơn confirmation.timeframe, ví dụ M5).</summary>
+    [JsonPropertyName("timeframe")]
+    public string Timeframe { get; set; } = "M5";
+
+    /// <summary>RETEST_THEN_CONTINUE</summary>
+    [JsonPropertyName("condition")]
+    public string Condition { get; set; } = EaRetestCondition.RetestThenContinue;
+
+    /// <summary>Mô hình nến trên khung retest xác nhận tiếp diễn sau khi chạm lại trigger.</summary>
+    [JsonPropertyName("patterns")]
+    public List<string> Patterns { get; set; } = new();
+
+    /// <summary>M1 &lt; M5 &lt; M15 &lt; H1 &lt; H4 &lt; D1 (M30 map về M15).</summary>
+    public static readonly string[] Ladder = { "M1", "M5", "M15", "H1", "H4", "D1" };
+
+    public static string DefaultTimeframe(string? confirmTimeframe) => OneStepSmaller(confirmTimeframe);
+
+    /// <summary>Đúng 1 bậc nhỏ hơn khung confirm. Confirm M1 thì giữ M1.</summary>
+    public static string OneStepSmaller(string? confirmTimeframe)
+    {
+        var tf = (confirmTimeframe ?? "M15").Trim().ToUpperInvariant();
+        if (tf == "M30")
+            return "M15";
+        int i = LadderIndex(tf);
+        if (i <= 0)
+            return "M1";
+        return Ladder[i - 1];
+    }
+
+    public static bool IsStrictlySmaller(string? retestTimeframe, string? confirmTimeframe)
+    {
+        int retest = LadderIndex(retestTimeframe);
+        int confirm = LadderIndex(confirmTimeframe);
+        if (retest < 0 || confirm < 0)
+            return false;
+        if (confirm == 0)
+            return retest == 0;
+        return retest < confirm;
+    }
+
+    public static int LadderIndex(string? timeframe)
+    {
+        var tf = (timeframe ?? "").Trim().ToUpperInvariant();
+        return Array.IndexOf(Ladder, tf);
+    }
 }
 
 public interface ITradingStrategistEngine
