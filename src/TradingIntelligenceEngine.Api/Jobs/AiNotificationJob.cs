@@ -112,6 +112,7 @@ public class AiNotificationJob : IAiNotificationJob
 
             var signalId = $"{DateTime.UtcNow:yyyyMMddHHmmss}_{symbol.ToUpperInvariant()}";
             tradingPlan.EnsureDefaults(symbol, signalId, maxRiskUsd);
+            TakeProfitPlanner.PullEarlier(tradingPlan, session?.Contract);
             tradingPlan.Source = TradingPlanSource.Ai;
 
             var origin = useAiStructure

@@ -103,7 +103,11 @@ TRADING:
    - Thuận khung lớn: dùng hết trần, SL sát invalidation.
    - Ngược khung lớn: dễ dính SL. Chỉ ra kịch bản nếu SL vẫn sát cấu trúc, TP1 RR ≥ 1:1, và hạ max_risk_usd còn khoảng 30–50% trần. Ghi rõ trong logic là đánh ngược + rủi ro đã giảm.
    - Nếu SL quá xa khiến min lot của cặp đã lỗ hơn trần thì BỎ kịch bản — ưu tiên NO TRADE.
-   - Không tạo kịch bản ngược khung lớn chỉ vì M15 đẹp khi SL không vừa ngân sách của cặp đó.";
+   - Không tạo kịch bản ngược khung lớn chỉ vì M15 đẹp khi SL không vừa ngân sách của cặp đó.
+7. TAKE PROFIT — CHỌN NHƯ BÌNH THƯỜNG, RỒI DỊCH SỚM MỘT CHÚT:
+   - Cách chọn TP không đổi (cấu trúc / RR / ý đồ kịch bản). Không bắt TP phải là kháng cự hay hỗ trợ.
+   - Sau khi có 3 mức: dịch mỗi TP về phía entry một đoạn max(3×spread, 8×tick), không quá 20% khoảng entry→TP, để trừ spread sàn cho dễ cắn.
+   - BUY: TP giảm một chút. SELL: TP tăng một chút. Không kéo TP về sát entry.";
     }
 
     public static string BuildUserPrompt(
@@ -128,6 +132,10 @@ TRADING:
         sb.Append(contract != null
             ? contract.ToPromptBlock(symbol, risk)
             : new SymbolContractSpec().ToPromptBlock(symbol, risk));
+        sb.AppendLine("TAKE PROFIT:");
+        sb.AppendLine("- Chọn TP như bình thường. Sau đó dịch mỗi mức về phía entry (BUY giảm / SELL tăng) một đoạn max(3×spread, 8×tick) để trừ spread — không đổi ý đồ TP, không gán TP = kháng cự/hỗ trợ.");
+        if (contract != null && (contract.SpreadPrice > 0 || contract.TickSize > 0))
+            sb.AppendLine($"- Spread ≈ {contract.SpreadPrice.ToString("0.########", System.Globalization.CultureInfo.InvariantCulture)} → dịch sớm ≈ {contract.TpEarlyOffset().ToString("0.########", System.Globalization.CultureInfo.InvariantCulture)}.");
 
         if (!string.IsNullOrWhiteSpace(triggerReason))
         {

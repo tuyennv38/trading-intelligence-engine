@@ -236,6 +236,7 @@ public class EaScenarioController : ControllerBase
                 ? request.MaxRiskUsd
                 : sessionForRisk?.MaxRiskUsd ?? TradingPlanResponse.DefaultMaxRiskUsd);
         plan.EnsureDefaults(symbol, signalId, cap);
+        TakeProfitPlanner.PullEarlier(plan, sessionForRisk?.Contract);
         plan.Source = TradingPlanSource.Manual;
 
         var errors = TradingPlanValidator.Validate(plan);

@@ -19,7 +19,32 @@ public class SymbolContractSpec
     public decimal VolumeMax { get; set; }
     public int StopsLevel { get; set; }
 
+    /// <summary>Spread sàn (points, SYMBOL_SPREAD).</summary>
+    public int SpreadPoints { get; set; }
+
+    /// <summary>Spread theo giá (Ask − Bid).</summary>
+    public decimal Spread { get; set; }
+
     public bool HasPricing => TickSize > 0 && TickValue > 0;
+
+    public decimal SpreadPrice =>
+        Spread > 0
+            ? Spread
+            : (Point > 0 && SpreadPoints > 0 ? SpreadPoints * Point : 0);
+
+    /// <summary>
+    /// Dịch TP sớm về phía entry: max(3×spread, 8×tick), không quá 20% khoảng entry→TP.
+    /// </summary>
+    public decimal TpEarlyOffset(decimal tpDistance = 0)
+    {
+        var tick = TickSize > 0 ? TickSize : (Point > 0 ? Point : 0.01m);
+        var v = Math.Max(SpreadPrice * 3m, tick * 8m);
+        if (tpDistance > 0)
+            v = Math.Min(v, tpDistance * 0.20m);
+
+        var digits = Digits > 0 ? Digits : 2;
+        return decimal.Round(v, digits);
+    }
 
     public decimal LossUsdPerLot(decimal priceDistance)
     {
@@ -63,6 +88,7 @@ public class SymbolContractSpec
 
         sb.AppendLine($"- digits={Digits}, point={Fmt(Point)}, tick_size={Fmt(TickSize)}, tick_value={Fmt(TickValue)} USD mỗi 1 tick trên 1.0 lot, contract_size={Fmt(ContractSize)}");
         sb.AppendLine($"- volume min={Fmt(VolumeMin)} step={Fmt(VolumeStep)} max={Fmt(VolumeMax)}; stops_level={StopsLevel} points");
+        sb.AppendLine($"- spread ≈ {Fmt(SpreadPrice)} ({SpreadPoints} points). Sau khi chọn TP xong, dịch mỗi mức về phía entry ≈ {Fmt(TpEarlyOffset())} (3×spread hoặc 8×tick) để trừ spread — không đổi logic chọn TP.");
         sb.AppendLine("- EA tính: lỗ_1_lot = (khoảng_SL / tick_size) × tick_value; lot = floor(max_risk_usd / lỗ_1_lot) theo volume_step. KHÔNG gửi trường lot.");
 
         AppendWorkedExample(sb, maxRiskUsd, 100);

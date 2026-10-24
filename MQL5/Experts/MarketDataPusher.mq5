@@ -4,7 +4,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Tuyen PC"
 #property link      ""
-#property version   "1.07"
+#property version   "1.08"
 
 #include <Trade\Trade.mqh>
 #include <JAson.mqh>
@@ -346,7 +346,10 @@ string BuildContractJson()
    s += "    \"volumeMin\": " + DoubleToString(SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN), 4) + ",\n";
    s += "    \"volumeStep\": " + DoubleToString(SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP), 4) + ",\n";
    s += "    \"volumeMax\": " + DoubleToString(SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX), 2) + ",\n";
-   s += "    \"stopsLevel\": " + IntegerToString((int)SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL)) + "\n";
+   s += "    \"stopsLevel\": " + IntegerToString((int)SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL)) + ",\n";
+   s += "    \"spreadPoints\": " + IntegerToString((int)SymbolInfoInteger(_Symbol, SYMBOL_SPREAD)) + ",\n";
+   s += "    \"spread\": " + DoubleToString(
+         SymbolInfoDouble(_Symbol, SYMBOL_ASK) - SymbolInfoDouble(_Symbol, SYMBOL_BID), 8) + "\n";
    s += "  },\n";
    return s;
   }
