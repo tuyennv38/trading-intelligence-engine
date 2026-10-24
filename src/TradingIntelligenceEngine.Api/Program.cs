@@ -88,6 +88,7 @@ builder.Services.AddSingleton<IMarketDataStore, InMemoryMarketDataStore>(); // R
 builder.Services.AddTransient<IMarketAnalyzer, MarketAnalyzerService>();
 builder.Services.AddTransient<IAiNotificationJob, AiNotificationJob>(); // Register Hangfire Job
 builder.Services.AddTransient<TradingIntelligenceEngine.Api.Services.ITradingPlanRefreshService, TradingIntelligenceEngine.Api.Services.TradingPlanRefreshService>();
+builder.Services.AddHostedService<TradingIntelligenceEngine.Api.Services.StartupNotificationHostedService>();
 
 builder.Services.AddTransient<ITradingStrategy, TrendFollowingPullbackStrategy>();
 builder.Services.AddTransient<IStrategyEngine, StrategyEngine>();
