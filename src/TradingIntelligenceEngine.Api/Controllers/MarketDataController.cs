@@ -155,7 +155,9 @@ public class MarketDataController : ControllerBase
                 Timeframes = candlesByTimeframe.Keys.ToList(),
                 PlanRefreshInProgress = true,
                 CandleCapacityByTimeframe = capacities,
-                MaxInitCandleCount = SymbolTradingSession.MaxCount(capacities.Values)
+                MaxInitCandleCount = SymbolTradingSession.MaxCount(capacities.Values),
+                MaxRiskUsd = SymbolTradingSession.NormalizeMaxRiskUsd(request.MaxRiskUsd),
+                Contract = request.Contract
             });
 
             if (request.UseAiStructure)
@@ -264,7 +266,9 @@ public class MarketDataController : ControllerBase
                     Timeframes = request.Timeframes.Keys.ToList(),
                     MaxInitCandleCount = 0,
                     CandleCapacityByTimeframe = request.Timeframes.Keys.ToDictionary(
-                        k => k, _ => SymbolTradingSession.LostHistoryCapacity, StringComparer.OrdinalIgnoreCase)
+                        k => k, _ => SymbolTradingSession.LostHistoryCapacity, StringComparer.OrdinalIgnoreCase),
+                    MaxRiskUsd = SymbolTradingSession.NormalizeMaxRiskUsd(request.MaxRiskUsd),
+                    Contract = request.Contract
                 };
                 await _marketDataStore.SetSymbolSessionAsync(request.Symbol, session);
             }
@@ -281,6 +285,10 @@ public class MarketDataController : ControllerBase
                             : SymbolTradingSession.LostHistoryCapacity;
                     }
                 }
+                if (request.MaxRiskUsd > 0)
+                    session.MaxRiskUsd = SymbolTradingSession.NormalizeMaxRiskUsd(request.MaxRiskUsd);
+                if (request.Contract != null && request.Contract.HasPricing)
+                    session.Contract = request.Contract;
                 await _marketDataStore.SetSymbolSessionAsync(request.Symbol, session);
             }
 

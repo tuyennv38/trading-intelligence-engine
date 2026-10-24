@@ -35,6 +35,8 @@ public static class TradingPlanValidator
 
             if (s.TakeProfits == null || s.TakeProfits.Count == 0)
                 errors.Add($"{prefix}.tps phải có ít nhất 1 mức.");
+            else if (s.TakeProfits.Count > 3)
+                errors.Add($"{prefix}.tps tối đa 3 mức (TP1, TP2, TP3). Không gửi TP4.");
 
             if (s.IsReversal)
             {

@@ -1,0 +1,1483 @@
+//+------------------------------------------------------------------+
+//|                                             MarketDataPusher.mq5 |
+//|                                                      Tuyen PC    |
+//+------------------------------------------------------------------+
+#property copyright "Tuyen PC"
+#property link      ""
+#property version   "1.07"
+
+#include <Trade\Trade.mqh>
+#include <JAson.mqh>
+
+//--- Cài đặt API ---
+input string BaseUrl         = "https://botai.cscmobicorp.com";
+input bool   InpUseAiStructure = true;             // Sử dụng AI Structure (Gửi trường "useAiStructure" trong /initialize)
+
+//--- Cài đặt Giao Dịch & Quản Lý Kịch Bản AI ---
+input double InpMaxRiskMoney     = 100.0;            // Số tiền chịu rủi ro tối đa 1 lần vào lệnh (USD). Lot tính từ SL, không được vượt mức này.
+input ulong  InpMagicNumber      = 123456;           // Magic Number
+input int    InpSlippage         = 10;               // Slippage
+input int    InpBreakevenOffset  = 20;               // Bù trừ hòa vốn (Points) để bù phí khi dời SL sau TP1
+input int    InpCheckScenarioSec = 60;               // Thời gian gọi API kiểm tra kịch bản mới (giây) - Mặc định 60s
+
+//--- Cài đặt khung thời gian kích hoạt (Trigger) cập nhật ---
+input ENUM_TIMEFRAMES InpTriggerTimeframe = PERIOD_M1; // Scalping: mỗi nến M1 đóng thì /update
+
+// Scalping mặc định: H1 bias → M15 xác nhận kịch bản → M5 vào lệnh / retest.
+// Số nến đủ BOS/CHOCH, không phình prompt AI.
+//--- Cài đặt Timeframe 1 ---
+input bool             InpEnableTf1       = true;             // Kích hoạt Timeframe 1
+input ENUM_TIMEFRAMES  InpTimeframe1      = PERIOD_H1;        // Bias / cấu trúc khung lớn
+input int              InpCandles1        = 96;               // 96 H1 ≈ 4 ngày
+
+//--- Cài đặt Timeframe 2 ---
+input bool             InpEnableTf2       = true;             // Kích hoạt Timeframe 2
+input ENUM_TIMEFRAMES  InpTimeframe2      = PERIOD_M15;       // Xác nhận kịch bản (confirm)
+input int              InpCandles2        = 96;               // 96 M15 ≈ 24 giờ
+
+//--- Cài đặt Timeframe 3 ---
+input bool             InpEnableTf3       = true;             // Kích hoạt Timeframe 3
+input ENUM_TIMEFRAMES  InpTimeframe3      = PERIOD_M5;        // Vào lệnh / retest
+input int              InpCandles3        = 72;               // 72 M5 ≈ 6 giờ (1 phiên)
+
+//--- Cài đặt Timeframe 4 (tắt — bật M1 nếu muốn nhìn siêu ngắn) ---
+input bool             InpEnableTf4       = false;            // Tắt mặc định (scalping 3 khung)
+input ENUM_TIMEFRAMES  InpTimeframe4      = PERIOD_M1;        // Dự phòng
+input int              InpCandles4        = 60;               // 60 M1 ≈ 1 giờ nếu bật
+
+// Biến lưu trữ thời gian mở nến Trigger hiện tại
+datetime last_trigger_time = 0;
+
+// Các handles của Indicator cho 4 timeframe
+int h_emaFast[4], h_emaSlow[4], h_rsi[4], h_atr[4], h_adx[4];
+
+//====================================================================
+// KHAI BÁO CẤU TRÚC VÀ BIẾN CHO GIAO DỊCH KỊCH BẢN AI
+//====================================================================
+CTrade trade;
+
+enum ENUM_SCENARIO_TYPE {
+    REVERSAL_SELL,
+    REVERSAL_BUY,
+    BREAKOUT_SELL,
+    BREAKOUT_BUY,
+    UNKNOWN_TYPE
+};
+
+enum ENUM_SCENARIO_STATUS {
+    PENDING,
+    ACTIVE,
+    EXPIRED,
+    COMPLETED
+};
+
+struct Scenario {
+    string               id;
+    ENUM_SCENARIO_TYPE   type;
+    string               name;
+    
+    double               entry_min;
+    double               entry_max;
+    
+    double               trigger_price;
+    double               sl;
+    double               max_risk_usd;     // lỗ chấp nhận kịch bản này; EA tính lot từ SL
+    double               tps[3];
+    int                  tps_count;
+    
+    string               confirm_condition;
+    ENUM_TIMEFRAMES      confirm_timeframe;
+    string               confirm_patterns[5];
+    int                  patterns_count;
+
+    ENUM_TIMEFRAMES      retest_timeframe;
+    string               retest_condition;
+    string               retest_patterns[5];
+    int                  retest_patterns_count;
+    
+    ENUM_SCENARIO_STATUS status;
+    bool                 ready_to_confirm;
+    bool                 breakout_confirmed;   // nến confirm đã đóng phá trigger
+    bool                 retest_touched;       // giá đã hồi chạm lại trigger
+    datetime             last_bar_time;
+    datetime             last_retest_bar_time;
+};
+
+Scenario g_scenarios[];
+int      g_scenarios_count = 0;
+
+string   g_current_signal_id = "";        // Lưu signal_id đang xử lý
+bool     g_is_trading = false;           // Đang có lệnh chạy hay không
+datetime g_trade_start_time = 0;         // Thời điểm bắt đầu vào lệnh
+int      g_active_scenario_index = -1;   // Kịch bản nào đang khớp lệnh
+bool     g_ea_stopped = false;           // Đã hoàn thành (Win)
+datetime g_last_scenario_check = 0;      // Thời điểm kiểm tra API kịch bản gần nhất
+
+//+------------------------------------------------------------------+
+//| Chuyển chuỗi TF thành ENUM_TIMEFRAMES                            |
+//+------------------------------------------------------------------+
+ENUM_TIMEFRAMES StringToTimeframe(string tf) {
+    if(tf == "M1") return PERIOD_M1;
+    if(tf == "M5") return PERIOD_M5;
+    if(tf == "M15") return PERIOD_M15;
+    if(tf == "M30") return PERIOD_M30;
+    if(tf == "H1") return PERIOD_H1;
+    if(tf == "H4") return PERIOD_H4;
+    if(tf == "D1") return PERIOD_D1;
+    return PERIOD_CURRENT;
+}
+
+//+------------------------------------------------------------------+
+//| 1 bậc nhỏ hơn khung confirm (M15→M5, M5→M1, H1→M15, H4→H1)       |
+//+------------------------------------------------------------------+
+ENUM_TIMEFRAMES OneStepSmallerTf(ENUM_TIMEFRAMES tf)
+  {
+   if(tf == PERIOD_M1)  return PERIOD_M1;
+   if(tf == PERIOD_M5)  return PERIOD_M1;
+   if(tf == PERIOD_M15) return PERIOD_M5;
+   if(tf == PERIOD_M30) return PERIOD_M15;
+   if(tf == PERIOD_H1)  return PERIOD_M15;
+   if(tf == PERIOD_H4)  return PERIOD_H1;
+   if(tf == PERIOD_D1)  return PERIOD_H4;
+   return PERIOD_M5;
+  }
+
+//+------------------------------------------------------------------+
+//| Kiểm tra xem còn lệnh đang mở không                              |
+//+------------------------------------------------------------------+
+bool HasOpenPositions() {
+    for(int i = PositionsTotal() - 1; i >= 0; i--) {
+        if(PositionGetSymbol(i) == _Symbol) {
+            if(PositionGetInteger(POSITION_MAGIC) == InpMagicNumber) return true;
+        }
+    }
+    return false;
+}
+
+//+------------------------------------------------------------------+
+//| Kiểm tra xem toàn bộ các kịch bản đã kết thúc/hết hiệu lực chưa   |
+//+------------------------------------------------------------------+
+bool IsAllScenariosFinished() {
+    // Nếu đang có lệnh hoặc đang trong chu trình giao dịch -> Chưa kết thúc
+    if(HasOpenPositions() || g_is_trading) return false;
+    
+    // Nếu chưa từng có kịch bản nào được nạp -> Chưa có kịch bản để hoàn thành
+    if(g_scenarios_count == 0) return false;
+    
+    // Nếu EA đã dừng vì chốt lời (WIN) -> Toàn bộ kịch bản đã xong
+    if(g_ea_stopped) return true;
+    
+    // Đếm số kịch bản còn đang chờ (PENDING)
+    int pending_count = 0;
+    for(int i = 0; i < g_scenarios_count; i++) {
+        if(g_scenarios[i].status == PENDING) pending_count++;
+    }
+    
+    return (pending_count == 0);
+}
+
+//+------------------------------------------------------------------+
+//| Hàm định dạng số liệu Indicator (tránh bị lỗi EMPTY_VALUE)       |
+//+------------------------------------------------------------------+
+string FormatIndicator(double val, int digits)
+  {
+   if(val == EMPTY_VALUE || MathIsValidNumber(val) == false || val == 0.0) return "0.0";
+   return DoubleToString(val, digits);
+  }
+
+//+------------------------------------------------------------------+
+//| Hàm lấy tên String của Timeframe (Vd: PERIOD_H4 -> "H4")         |
+//+------------------------------------------------------------------+
+string TimeframeToString(ENUM_TIMEFRAMES tf)
+  {
+   string name = EnumToString(tf);
+   if(StringFind(name, "PERIOD_") == 0)
+      name = StringSubstr(name, 7); // Bỏ chữ "PERIOD_" để giữ lại ví dụ "H4", "M15"
+   return name;
+  }
+
+//+------------------------------------------------------------------+
+//| Hàm lấy URL hoàn chỉnh để gọi API                                |
+//+------------------------------------------------------------------+
+string GetApiUrl(string endpoint)
+  {
+   string base = BaseUrl;
+   while(StringLen(base) > 0 && StringSubstr(base, StringLen(base)-1, 1) == "/")
+      base = StringSubstr(base, 0, StringLen(base)-1);
+      
+   if(StringLen(endpoint) > 0 && StringSubstr(endpoint, 0, 1) != "/")
+      endpoint = "/" + endpoint;
+      
+   return base + endpoint;
+  }
+
+//+------------------------------------------------------------------+
+//| Hàm core để gọi HTTP POST                                        |
+//+------------------------------------------------------------------+
+bool SendHttpRequest(string json_data, string target_url, bool show_message)
+  {
+   char post_data[];
+   char result_data[];
+   string result_headers;
+   
+   // Chuyển string sang mảng byte chuẩn UTF-8
+   int size = StringToCharArray(json_data, post_data, 0, WHOLE_ARRAY, CP_UTF8);
+   if(size > 0)
+      ArrayResize(post_data, size - 1); // Loại bỏ ký tự null '\0' ở cuối
+      
+   string headers = "Content-Type: application/json\r\nAccept: application/json\r\n";
+   
+   Print("--------------------------------------------------");
+   Print("[API CALL] Bắt đầu gọi POST request tới: ", target_url);
+   
+   // Gọi HTTP POST, đặt timeout 15 giây
+   int res = WebRequest("POST", target_url, headers, 15000, post_data, result_data, result_headers);
+   
+   // HTTP code 200 (OK) hoặc 201 (Created) đều được xem là thành công
+   if(res == 200 || res == 201)
+     {
+      string response_str = CharArrayToString(result_data, 0, WHOLE_ARRAY, CP_UTF8);
+      Print("[API SUCCESS] HTTP Code: ", res);
+      Print("[API SUCCESS] Response: ", response_str);
+      Print("--------------------------------------------------");
+      return true;
+     }
+   else
+     {
+      Print("[API ERROR] HTTP Code: ", res, " | Mã lỗi nội bộ MT5: ", GetLastError());
+      
+      // Báo lỗi riêng nếu chưa cho phép WebRequest trong cấu hình
+      if(res == -1 && GetLastError() == 4014)
+        {
+         Print("[API ERROR 4014] LỖI BẢO MẬT MT5: Bạn chưa Allow WebRequest cho URL này.");
+         if(show_message)
+            MessageBox("Lỗi chưa cho phép WebRequest!\nVui lòng vào Options -> Expert Advisors -> Allow WebRequest cho Base URL.", "Lỗi", MB_OK | MB_ICONERROR);
+        }
+      else
+        {
+         string response_str = CharArrayToString(result_data, 0, WHOLE_ARRAY, CP_UTF8);
+         Print("[API ERROR SERVER] Trả về chi tiết: ", response_str);
+        }
+        
+      Print("--------------------------------------------------");
+      return false;
+     }
+  }
+
+//+------------------------------------------------------------------+
+//| Build JSON string cho từng Timeframe (dành cho API initialize)   |
+//+------------------------------------------------------------------+
+string BuildTimeframeData(int tf_index, string tf_name, ENUM_TIMEFRAMES tf, int count, bool has_next)
+  {
+   string result = "    \"" + tf_name + "\": [\n";
+   
+   MqlRates rates[];
+   ArraySetAsSeries(rates, true); // Index 0 là nến hiện tại (mới nhất)
+   
+   int copied = CopyRates(_Symbol, tf, 0, count, rates);
+   if(copied <= 0)
+     {
+      Print("Lỗi khi lấy dữ liệu cho ", tf_name, ", mã lỗi MT5: ", GetLastError());
+      return "    \"" + tf_name + "\": []" + (has_next ? ",\n" : "\n");
+     }
+     
+   double emaFast[], emaSlow[], rsi[], atr[], adx[];
+   ArraySetAsSeries(emaFast, true);
+   ArraySetAsSeries(emaSlow, true);
+   ArraySetAsSeries(rsi, true);
+   ArraySetAsSeries(atr, true);
+   ArraySetAsSeries(adx, true);
+   
+   CopyBuffer(h_emaFast[tf_index], 0, 0, copied, emaFast);
+   CopyBuffer(h_emaSlow[tf_index], 0, 0, copied, emaSlow);
+   CopyBuffer(h_rsi[tf_index], 0, 0, copied, rsi);
+   CopyBuffer(h_atr[tf_index], 0, 0, copied, atr);
+   CopyBuffer(h_adx[tf_index], 0, 0, copied, adx);
+     
+   // Chạy từ nến cũ nhất (copied - 1) về nến mới nhất (0)
+   for(int i = copied - 1; i >= 0; i--)
+     {
+      double v_emaFast = (i < ArraySize(emaFast)) ? emaFast[i] : 0.0;
+      double v_emaSlow = (i < ArraySize(emaSlow)) ? emaSlow[i] : 0.0;
+      double v_rsi     = (i < ArraySize(rsi))     ? rsi[i] : 0.0;
+      double v_atr     = (i < ArraySize(atr))     ? atr[i] : 0.0;
+      double v_adx     = (i < ArraySize(adx))     ? adx[i] : 0.0;
+     
+      string obj = "      {\n";
+      obj += "        \"time\": " + IntegerToString(rates[i].time) + ",\n";
+      obj += "        \"open\": " + DoubleToString(rates[i].open, _Digits) + ",\n";
+      obj += "        \"high\": " + DoubleToString(rates[i].high, _Digits) + ",\n";
+      obj += "        \"low\": " + DoubleToString(rates[i].low, _Digits) + ",\n";
+      obj += "        \"close\": " + DoubleToString(rates[i].close, _Digits) + ",\n";
+      obj += "        \"tickVolume\": " + IntegerToString(rates[i].tick_volume) + ",\n";
+      obj += "        \"emaFast\": " + FormatIndicator(v_emaFast, _Digits) + ",\n";
+      obj += "        \"emaSlow\": " + FormatIndicator(v_emaSlow, _Digits) + ",\n";
+      obj += "        \"rsi\": " + FormatIndicator(v_rsi, 2) + ",\n";
+      obj += "        \"atr\": " + FormatIndicator(v_atr, _Digits) + ",\n";
+      obj += "        \"adx\": " + FormatIndicator(v_adx, 2) + "\n";
+      obj += "      }";
+      
+      if(i > 0)
+         obj += ","; // Thêm phẩy nếu chưa tới phần tử cuối của mảng
+      obj += "\n";
+         
+      result += obj;
+     }
+   
+   if(has_next)
+      result += "    ],\n";
+   else
+      result += "    ]\n";
+      
+   return result;
+  }
+
+//+------------------------------------------------------------------+
+//| Hợp đồng cặp hiện tại — lot/rủi ro phụ thuộc tick value          |
+//+------------------------------------------------------------------+
+string BuildContractJson()
+  {
+   string s = "  \"contract\": {\n";
+   s += "    \"digits\": " + IntegerToString((int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS)) + ",\n";
+   s += "    \"point\": " + DoubleToString(SymbolInfoDouble(_Symbol, SYMBOL_POINT), 8) + ",\n";
+   s += "    \"tickSize\": " + DoubleToString(SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE), 8) + ",\n";
+   s += "    \"tickValue\": " + DoubleToString(SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE), 4) + ",\n";
+   s += "    \"contractSize\": " + DoubleToString(SymbolInfoDouble(_Symbol, SYMBOL_TRADE_CONTRACT_SIZE), 2) + ",\n";
+   s += "    \"volumeMin\": " + DoubleToString(SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN), 4) + ",\n";
+   s += "    \"volumeStep\": " + DoubleToString(SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP), 4) + ",\n";
+   s += "    \"volumeMax\": " + DoubleToString(SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX), 2) + ",\n";
+   s += "    \"stopsLevel\": " + IntegerToString((int)SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL)) + "\n";
+   s += "  },\n";
+   return s;
+  }
+
+//+------------------------------------------------------------------+
+//| Hàm gửi dữ liệu Init                                             |
+//+------------------------------------------------------------------+
+void SendMarketDataInitialize(bool show_message)
+  {
+   Print("=> Đang chuẩn bị dữ liệu thị trường (Initialize)...");
+   
+   // 1. Khởi tạo và gom nhóm dữ liệu JSON cho /initialize
+   string json = "{\n";
+   json += "  \"symbol\": \"" + _Symbol + "\",\n";
+   json += "  \"useAiStructure\": " + (InpUseAiStructure ? "true" : "false") + ",\n";
+   json += "  \"maxRiskUsd\": " + DoubleToString(InpMaxRiskMoney, 2) + ",\n";
+   json += BuildContractJson();
+   json += "  \"timeframes\": {\n";
+   
+   string tf_blocks[];
+   if(InpEnableTf1)
+     {
+      int s = ArraySize(tf_blocks); ArrayResize(tf_blocks, s + 1);
+      tf_blocks[s] = BuildTimeframeData(0, TimeframeToString(InpTimeframe1), InpTimeframe1, InpCandles1, false);
+     }
+   if(InpEnableTf2)
+     {
+      int s = ArraySize(tf_blocks); ArrayResize(tf_blocks, s + 1);
+      tf_blocks[s] = BuildTimeframeData(1, TimeframeToString(InpTimeframe2), InpTimeframe2, InpCandles2, false);
+     }
+   if(InpEnableTf3)
+     {
+      int s = ArraySize(tf_blocks); ArrayResize(tf_blocks, s + 1);
+      tf_blocks[s] = BuildTimeframeData(2, TimeframeToString(InpTimeframe3), InpTimeframe3, InpCandles3, false);
+     }
+   if(InpEnableTf4)
+     {
+      int s = ArraySize(tf_blocks); ArrayResize(tf_blocks, s + 1);
+      tf_blocks[s] = BuildTimeframeData(3, TimeframeToString(InpTimeframe4), InpTimeframe4, InpCandles4, false);
+     }
+     
+   for(int i = 0; i < ArraySize(tf_blocks); i++)
+     {
+      json += tf_blocks[i];
+      if(i < ArraySize(tf_blocks) - 1) json += ",\n";
+      else json += "\n";
+     }
+   
+   json += "  }\n";
+   json += "}";
+   
+   Print("Chuẩn bị dữ liệu xong. Bắt đầu gửi qua API /initialize...");
+   
+   // 2. Gửi dữ liệu JSON qua Web API
+   string url = GetApiUrl("/api/v1/market-data/initialize");
+   if(SendHttpRequest(json, url, show_message))
+     {
+      Print("Gửi dữ liệu initialize thành công!");
+      if(show_message)
+         MessageBox("Khởi tạo API thành công!", "Thành công", MB_OK | MB_ICONINFORMATION);
+     }
+  }
+
+//+------------------------------------------------------------------+
+//| Expert initialization function                                   |
+//+------------------------------------------------------------------+
+int OnInit()
+  {
+   Print("=== KHỞI CHẠY MARKET DATA PUSHER ===");
+   
+   string tf1_name = TimeframeToString(InpTimeframe1);
+   string tf2_name = TimeframeToString(InpTimeframe2);
+   string tf3_name = TimeframeToString(InpTimeframe3);
+   string tf4_name = TimeframeToString(InpTimeframe4);
+   
+   Print("Các khung thời gian đã cấu hình: ", tf1_name, ", ", tf2_name, ", ", tf3_name, ", ", tf4_name);
+   Print("Khung thời gian Trigger Update: ", TimeframeToString(InpTriggerTimeframe));
+   
+   // Khởi tạo các Handle cho Indicator (Chỉ tạo handle cho khung nào được kích hoạt)
+   ENUM_TIMEFRAMES tfs[4] = {InpTimeframe1, InpTimeframe2, InpTimeframe3, InpTimeframe4};
+   bool enables[4] = {InpEnableTf1, InpEnableTf2, InpEnableTf3, InpEnableTf4};
+   for(int i = 0; i < 4; i++)
+     {
+      if(enables[i])
+        {
+         h_emaFast[i] = iMA(_Symbol, tfs[i], 34, 0, MODE_EMA, PRICE_CLOSE);
+         h_emaSlow[i] = iMA(_Symbol, tfs[i], 89, 0, MODE_EMA, PRICE_CLOSE);
+         h_rsi[i]     = iRSI(_Symbol, tfs[i], 14, PRICE_CLOSE);
+         h_atr[i]     = iATR(_Symbol, tfs[i], 14);
+         h_adx[i]     = iADX(_Symbol, tfs[i], 14);
+        }
+      else
+        {
+         h_emaFast[i] = INVALID_HANDLE;
+         h_emaSlow[i] = INVALID_HANDLE;
+         h_rsi[i]     = INVALID_HANDLE;
+         h_atr[i]     = INVALID_HANDLE;
+         h_adx[i]     = INVALID_HANDLE;
+        }
+     }
+   
+   // Gọi Init lần đầu khi EA vừa được ném vào Chart (sau khi các handle Indicator đã được tạo)
+   SendMarketDataInitialize(true);
+   
+   // Khởi tạo thời gian của nến Trigger hiện tại để bắt đầu theo dõi ở OnTick
+   last_trigger_time = iTime(_Symbol, InpTriggerTimeframe, 0);
+   
+   // Cấu hình CTrade
+   trade.SetExpertMagicNumber(InpMagicNumber);
+   trade.SetDeviationInPoints(InpSlippage);
+   trade.SetTypeFillingBySymbol(_Symbol);
+
+   // Kiểm tra kịch bản AI ngay lúc khởi động
+   CheckAndFetchNewScenario();
+   
+   return(INIT_SUCCEEDED);
+  }
+
+//+------------------------------------------------------------------+
+//| Expert deinitialization function                                 |
+//+------------------------------------------------------------------+
+void OnDeinit(const int reason)
+  {
+   // Giải phóng Handle Indicator
+   for(int i = 0; i < 4; i++)
+     {
+      IndicatorRelease(h_emaFast[i]);
+      IndicatorRelease(h_emaSlow[i]);
+      IndicatorRelease(h_rsi[i]);
+      IndicatorRelease(h_atr[i]);
+      IndicatorRelease(h_adx[i]);
+     }
+  }
+
+//+------------------------------------------------------------------+
+//| Build JSON cho 1 nến duy nhất (dành cho API update)              |
+//+------------------------------------------------------------------+
+string BuildSingleCandleJson(int tf_index, ENUM_TIMEFRAMES tf)
+  {
+   MqlRates rates[];
+   ArraySetAsSeries(rates, true); // Index 0 là nến hiện tại đang chạy (hoặc mới đóng)
+   
+   int copied = CopyRates(_Symbol, tf, 0, 1, rates);
+   if(copied <= 0) return "{}"; // Trả về object rỗng nếu có lỗi
+   
+   double emaFast[], emaSlow[], rsi[], atr[], adx[];
+   ArraySetAsSeries(emaFast, true);
+   ArraySetAsSeries(emaSlow, true);
+   ArraySetAsSeries(rsi, true);
+   ArraySetAsSeries(atr, true);
+   ArraySetAsSeries(adx, true);
+   
+   CopyBuffer(h_emaFast[tf_index], 0, 0, 1, emaFast);
+   CopyBuffer(h_emaSlow[tf_index], 0, 0, 1, emaSlow);
+   CopyBuffer(h_rsi[tf_index], 0, 0, 1, rsi);
+   CopyBuffer(h_atr[tf_index], 0, 0, 1, atr);
+   CopyBuffer(h_adx[tf_index], 0, 0, 1, adx);
+   
+   double v_emaFast = (ArraySize(emaFast) > 0) ? emaFast[0] : 0.0;
+   double v_emaSlow = (ArraySize(emaSlow) > 0) ? emaSlow[0] : 0.0;
+   double v_rsi     = (ArraySize(rsi) > 0)     ? rsi[0] : 0.0;
+   double v_atr     = (ArraySize(atr) > 0)     ? atr[0] : 0.0;
+   double v_adx     = (ArraySize(adx) > 0)     ? adx[0] : 0.0;
+   
+   string obj = "{\n";
+   obj += "      \"time\": " + IntegerToString(rates[0].time) + ",\n";
+   obj += "      \"open\": " + DoubleToString(rates[0].open, _Digits) + ",\n";
+   obj += "      \"high\": " + DoubleToString(rates[0].high, _Digits) + ",\n";
+   obj += "      \"low\": " + DoubleToString(rates[0].low, _Digits) + ",\n";
+   obj += "      \"close\": " + DoubleToString(rates[0].close, _Digits) + ",\n";
+   obj += "      \"tickVolume\": " + IntegerToString(rates[0].tick_volume) + ",\n";
+   obj += "      \"emaFast\": " + FormatIndicator(v_emaFast, _Digits) + ",\n";
+   obj += "      \"emaSlow\": " + FormatIndicator(v_emaSlow, _Digits) + ",\n";
+   obj += "      \"rsi\": " + FormatIndicator(v_rsi, 2) + ",\n";
+   obj += "      \"atr\": " + FormatIndicator(v_atr, _Digits) + ",\n";
+   obj += "      \"adx\": " + FormatIndicator(v_adx, 2) + "\n";
+   obj += "    }";
+   
+   return obj;
+  }
+
+//+------------------------------------------------------------------+
+//| Hàm gửi dữ liệu update sau mỗi lần đóng nến Trigger              |
+//+------------------------------------------------------------------+
+void SendMarketDataUpdate()
+  {
+   bool refresh_plan = IsAllScenariosFinished();
+   if(refresh_plan)
+     {
+      Print("=> [REFRESH PLAN] Tất cả kịch bản đã đi qua / hết hiệu lực. Đang gửi kèm \"refreshPlan\": true trong body update.");
+     }
+
+   string json = "{\n";
+   json += "  \"symbol\": \"" + _Symbol + "\",\n";
+   json += "  \"refreshPlan\": " + (refresh_plan ? "true" : "false") + ",\n";
+   json += "  \"maxRiskUsd\": " + DoubleToString(InpMaxRiskMoney, 2) + ",\n";
+   json += BuildContractJson();
+   json += "  \"timeframes\": {\n";
+   
+   string tf_updates[];
+   if(InpEnableTf1)
+     {
+      int s = ArraySize(tf_updates); ArrayResize(tf_updates, s + 1);
+      tf_updates[s] = "    \"" + TimeframeToString(InpTimeframe1) + "\": " + BuildSingleCandleJson(0, InpTimeframe1);
+     }
+   if(InpEnableTf2)
+     {
+      int s = ArraySize(tf_updates); ArrayResize(tf_updates, s + 1);
+      tf_updates[s] = "    \"" + TimeframeToString(InpTimeframe2) + "\": " + BuildSingleCandleJson(1, InpTimeframe2);
+     }
+   if(InpEnableTf3)
+     {
+      int s = ArraySize(tf_updates); ArrayResize(tf_updates, s + 1);
+      tf_updates[s] = "    \"" + TimeframeToString(InpTimeframe3) + "\": " + BuildSingleCandleJson(2, InpTimeframe3);
+     }
+   if(InpEnableTf4)
+     {
+      int s = ArraySize(tf_updates); ArrayResize(tf_updates, s + 1);
+      tf_updates[s] = "    \"" + TimeframeToString(InpTimeframe4) + "\": " + BuildSingleCandleJson(3, InpTimeframe4);
+     }
+     
+   for(int i = 0; i < ArraySize(tf_updates); i++)
+     {
+      json += tf_updates[i];
+      if(i < ArraySize(tf_updates) - 1) json += ",\n";
+      else json += "\n";
+     }
+   
+   json += "  }\n";
+   json += "}";
+   
+   string url = GetApiUrl("/api/v1/market-data/update");
+   
+   Print("=> Phát hiện đóng nến ", TimeframeToString(InpTriggerTimeframe), ". Chuẩn bị gọi API update...");
+   if(!SendHttpRequest(json, url, false))
+     {
+      // Log lỗi đã được xử lý bên trong hàm SendHttpRequest
+     }
+  }
+
+//+------------------------------------------------------------------+
+//| Expert tick function (Chạy theo mỗi biến động giá)               |
+//+------------------------------------------------------------------+
+void OnTick()
+  {
+   datetime current_time = TimeLocal();
+
+   // 1. Xử lý Update theo nến
+   // Lấy thời gian mở cửa của nến Trigger hiện tại
+   datetime current_trigger_time = iTime(_Symbol, InpTriggerTimeframe, 0);
+   
+   // Kiểm tra nến mới mở để gửi Update
+   if(last_trigger_time == 0)
+     {
+      last_trigger_time = current_trigger_time;
+     }
+   else if(current_trigger_time != last_trigger_time)
+     {
+      last_trigger_time = current_trigger_time;
+      SendMarketDataUpdate();
+     }
+
+   // 2. Định kỳ kiểm tra kịch bản mới từ API (nếu chưa có lệnh nào đang chạy)
+   if(current_time - g_last_scenario_check >= InpCheckScenarioSec)
+     {
+      g_last_scenario_check = current_time;
+      Print("=> [TICK TRIGGER] Đến chu kỳ kiểm tra kịch bản (mỗi ", InpCheckScenarioSec, "s). Đang gọi CheckAndFetchNewScenario()...");
+      CheckAndFetchNewScenario();
+     }
+
+   // 3. Giám sát giá và thực thi kế hoạch kịch bản
+   MonitorScenarios();
+  }
+  
+//+------------------------------------------------------------------+
+//| Hàm gửi HTTP GET Request                                         |
+//+------------------------------------------------------------------+
+bool SendHttpGetRequest(string target_url, string &response_str)
+  {
+   char post_data[];
+   char result_data[];
+   string result_headers;
+   string headers = "Accept: application/json\r\n";
+   
+   Print("--------------------------------------------------");
+   Print("[API GET CALL] Bắt đầu gọi GET tới: ", target_url);
+   
+   int res = WebRequest("GET", target_url, headers, 10000, post_data, result_data, result_headers);
+   if(res == 200)
+     {
+      response_str = CharArrayToString(result_data, 0, WHOLE_ARRAY, CP_UTF8);
+      Print("[API GET SUCCESS] HTTP Code: 200 | Response: ", response_str);
+      Print("--------------------------------------------------");
+      return true;
+     }
+   else
+     {
+      Print("[API GET ERROR] HTTP Code: ", res, " | URL: ", target_url, " | Lỗi MT5: ", GetLastError());
+      if(ArraySize(result_data) > 0)
+        {
+         string err_body = CharArrayToString(result_data, 0, WHOLE_ARRAY, CP_UTF8);
+         Print("[API GET ERROR BODY] ", err_body);
+        }
+      Print("--------------------------------------------------");
+      return false;
+     }
+  }
+
+//+------------------------------------------------------------------+
+//| Kiểm tra và tải kịch bản mới từ API                             |
+//+------------------------------------------------------------------+
+void CheckAndFetchNewScenario()
+  {
+   // CHỐT CHẶN AN TOÀN: Nếu đang có bất kỳ lệnh nào đang mở (hoặc đang trong chu trình giao dịch của kịch bản),
+   // TUYỆT ĐỐI KHÔNG GỌI API KIỂM TRA HAY TẢI KỊCH BẢN MỚI
+   if(HasOpenPositions())
+     {
+      Print("[SCENARIO SKIP] Đang có lệnh mở trên chart (Magic: ", InpMagicNumber, "). Tạm hoãn kiểm tra kịch bản mới để ưu tiên quản lý lệnh.");
+      return;
+     }
+   if(g_is_trading)
+     {
+      Print("[SCENARIO SKIP] Đang trong chu trình giao dịch của kịch bản trước. Tạm hoãn kiểm tra kịch bản mới.");
+      return;
+     }
+     
+   string latest_url = GetApiUrl("/api/v1/scenarios/latest-id?symbol=" + _Symbol);
+   string latest_resp = "";
+   
+   if(!SendHttpGetRequest(latest_url, latest_resp)) return;
+   
+   CJAVal json_latest;
+   if(!json_latest.Deserialize(latest_resp))
+     {
+      Print("[SCENARIO API] Không thể parse JSON từ latest-id: ", latest_resp);
+      return;
+     }
+     
+   string new_signal_id = json_latest["signal_id"].ToStr();
+   if(StringLen(new_signal_id) == 0)
+     {
+      Print("[SCENARIO API] API trả về signal_id rỗng!");
+      return;
+     }
+   
+   // Kiểm tra cờ has_scenarios và no_trade từ API
+   CJAVal* hs_node = json_latest.FindKey("has_scenarios");
+   bool has_scenarios = (hs_node != NULL) ? hs_node.ToBool() : true;
+   
+   CJAVal* nt_node = json_latest.FindKey("no_trade");
+   bool no_trade = (nt_node != NULL) ? nt_node.ToBool() : false;
+   
+   // NẾU KHÔNG CÓ KỊCH BẢN (has_scenarios == false HOẶC no_trade == true):
+   if(!has_scenarios || no_trade)
+     {
+      // Nếu có Signal mới mà báo no_trade/has_scenarios=false thì hủy các kịch bản cũ còn sót (nếu có)
+      if(g_scenarios_count > 0 && new_signal_id != g_current_signal_id)
+        {
+         Print("[SCENARIO] Thị trường có Signal mới [", new_signal_id, "] (has_scenarios=false, no_trade=", (no_trade ? "true" : "false"), "). Đã xóa các kịch bản cũ đang chờ.");
+         g_scenarios_count = 0;
+         ArrayResize(g_scenarios, 0);
+         g_current_signal_id = "";
+        }
+      Print("[SCENARIO] Signal ID [", new_signal_id, "] chưa có kịch bản (has_scenarios=false, no_trade=", (no_trade ? "true" : "false"), "). Tiếp tục gọi kiểm tra ở chu kỳ sau...");
+      return;
+     }
+   
+   // NẾU CÓ KỊCH BẢN: So sánh với signal_id đang lưu giữ HOẶC chưa nạp kịch bản (g_scenarios_count == 0)
+   if(new_signal_id != g_current_signal_id || g_scenarios_count == 0)
+     {
+      Print("--------------------------------------------------");
+      Print("[SCENARIO NEW] Phát hiện Signal ID có kịch bản sẵn sàng: [", new_signal_id, "] (Signal cũ: [", g_current_signal_id, "])");
+      Print("[SCENARIO CALL] Đang tải chi tiết kịch bản từ server...");
+      
+      string detail_url = GetApiUrl("/api/v1/scenarios/" + new_signal_id + "?symbol=" + _Symbol);
+      string detail_resp = "";
+      
+      if(SendHttpGetRequest(detail_url, detail_resp))
+        {
+         ParseAndLoadScenarioJson(detail_resp);
+        }
+     }
+   else
+     {
+      Print("[SCENARIO] Signal ID không đổi [", g_current_signal_id, "] (đang giám sát ", g_scenarios_count, " kịch bản), tiếp tục theo dõi.");
+     }
+  }
+
+//+------------------------------------------------------------------+
+//| Parse chuỗi JSON kịch bản chi tiết nạp vào bộ nhớ EA             |
+//+------------------------------------------------------------------+
+void ParseAndLoadScenarioJson(string json_str)
+  {
+   CJAVal json;
+   if(!json.Deserialize(json_str))
+     {
+      Print("[SCENARIO ERROR] Lỗi phân tích cú pháp JSON kịch bản chi tiết!");
+      return;
+     }
+     
+   string symbol_target = json["symbol"].ToStr();
+   if(symbol_target != _Symbol && StringFind(_Symbol, symbol_target) < 0)
+     {
+      Print("[SCENARIO REJECT] Kịch bản không dành cho cặp tiền này! Cần: ", symbol_target, " | Chart hiện tại: ", _Symbol);
+      return;
+     }
+     
+   CJAVal* sc_array = json["scenarios"];
+   if(sc_array == NULL || sc_array.type != jtARRAY)
+     {
+      Print("[SCENARIO ERROR] Không tìm thấy mảng 'scenarios' hợp lệ trong JSON.");
+      return;
+     }
+     
+   if(sc_array.Size() == 0)
+     {
+      Print("[SCENARIO] Mảng 'scenarios' rỗng (0 kịch bản). Tiếp tục đợi kịch bản ở chu kỳ sau...");
+      g_scenarios_count = 0;
+      ArrayResize(g_scenarios, 0);
+      return;
+     }
+     
+   g_current_signal_id = json["signal_id"].ToStr();
+   g_scenarios_count = sc_array.Size();
+   ArrayResize(g_scenarios, g_scenarios_count);
+   
+   Print("=== [BẮT ĐẦU NẠP KỊCH BẢN] Signal ID: ", g_current_signal_id, " | Bias: ", json["bias"].ToStr(), " ===");
+   
+   for(int i = 0; i < g_scenarios_count; i++)
+     {
+      CJAVal* item = sc_array[i];
+      
+      g_scenarios[i].id = item["id"].ToStr();
+      g_scenarios[i].name = item["name"].ToStr();
+      
+      string type_str = item["type"].ToStr();
+      if(type_str == "REVERSAL_SELL") g_scenarios[i].type = REVERSAL_SELL;
+      else if(type_str == "REVERSAL_BUY") g_scenarios[i].type = REVERSAL_BUY;
+      else if(type_str == "BREAKOUT_SELL") g_scenarios[i].type = BREAKOUT_SELL;
+      else if(type_str == "BREAKOUT_BUY") g_scenarios[i].type = BREAKOUT_BUY;
+      else g_scenarios[i].type = UNKNOWN_TYPE;
+      
+      if(item["entry_zone"] != NULL)
+        {
+         g_scenarios[i].entry_min = item["entry_zone"]["min"].ToDbl();
+         g_scenarios[i].entry_max = item["entry_zone"]["max"].ToDbl();
+        }
+        
+      g_scenarios[i].trigger_price = item["trigger_price"].ToDbl();
+      g_scenarios[i].sl = item["sl"].ToDbl();
+
+      double plan_risk = json["max_risk_usd"].ToDbl();
+      if(plan_risk <= 0.0)
+         plan_risk = InpMaxRiskMoney;
+      double sc_risk = item["max_risk_usd"].ToDbl();
+      if(sc_risk <= 0.0)
+         sc_risk = plan_risk;
+      if(sc_risk > InpMaxRiskMoney)
+         sc_risk = InpMaxRiskMoney;
+      g_scenarios[i].max_risk_usd = sc_risk;
+      
+      CJAVal* tps = item["tps"];
+      g_scenarios[i].tps_count = 0;
+      if(tps != NULL && tps.type == jtARRAY)
+        {
+         if(tps.Size() > 3)
+            Print("[SCENARIO] [", g_scenarios[i].id, "] có ", tps.Size(), " TP — chỉ lấy 3 mức đầu (TP1/TP2/TP3).");
+         int tp_size = MathMin(3, tps.Size());
+         for(int t=0; t<tp_size; t++)
+           {
+            g_scenarios[i].tps[t] = tps[t].ToDbl();
+            g_scenarios[i].tps_count++;
+           }
+        }
+        
+      CJAVal* confirm = item.FindKey("confirmation");
+      g_scenarios[i].patterns_count = 0;
+      g_scenarios[i].confirm_timeframe = PERIOD_M15;
+      if(confirm != NULL && confirm.type == jtOBJ)
+        {
+         g_scenarios[i].confirm_condition = confirm["condition"].ToStr();
+         ENUM_TIMEFRAMES ctf = StringToTimeframe(confirm["timeframe"].ToStr());
+         if(ctf != PERIOD_CURRENT)
+            g_scenarios[i].confirm_timeframe = ctf;
+         
+         CJAVal* patterns = confirm.FindKey("patterns");
+         if(patterns != NULL && patterns.type == jtARRAY)
+           {
+            int pat_size = MathMin(5, patterns.Size());
+            for(int p=0; p<pat_size; p++)
+              {
+               g_scenarios[i].confirm_patterns[p] = patterns[p].ToStr();
+               g_scenarios[i].patterns_count++;
+              }
+           }
+        }
+
+      g_scenarios[i].retest_patterns_count = 0;
+      g_scenarios[i].retest_timeframe = OneStepSmallerTf(g_scenarios[i].confirm_timeframe);
+      g_scenarios[i].retest_condition = "RETEST_THEN_CONTINUE";
+      CJAVal* retest = item.FindKey("retest");
+      if(retest != NULL && retest.type == jtOBJ)
+        {
+         g_scenarios[i].retest_condition = retest["condition"].ToStr();
+         ENUM_TIMEFRAMES rtf = StringToTimeframe(retest["timeframe"].ToStr());
+         if(rtf != PERIOD_CURRENT)
+            g_scenarios[i].retest_timeframe = rtf;
+         else
+            g_scenarios[i].retest_timeframe = OneStepSmallerTf(g_scenarios[i].confirm_timeframe);
+
+         CJAVal* rpatterns = retest.FindKey("patterns");
+         if(rpatterns != NULL && rpatterns.type == jtARRAY)
+           {
+            int rpat_size = MathMin(5, rpatterns.Size());
+            for(int p=0; p<rpat_size; p++)
+              {
+               g_scenarios[i].retest_patterns[p] = rpatterns[p].ToStr();
+               g_scenarios[i].retest_patterns_count++;
+              }
+           }
+        }
+        
+      string st = item["status"].ToStr();
+      if(st == "PENDING") g_scenarios[i].status = PENDING;
+      else g_scenarios[i].status = EXPIRED;
+      
+      g_scenarios[i].ready_to_confirm = false;
+      g_scenarios[i].breakout_confirmed = false;
+      g_scenarios[i].retest_touched = false;
+      g_scenarios[i].last_bar_time = 0;
+      g_scenarios[i].last_retest_bar_time = 0;
+      
+      Print(StringFormat(" -> [%d] ID: %s | Loại: %s | SL: %.3f | Risk: %.2f USD | TPs: %d | Confirm: %s | Retest: %s",
+            i+1, g_scenarios[i].id, type_str, g_scenarios[i].sl, g_scenarios[i].max_risk_usd, g_scenarios[i].tps_count,
+            TimeframeToString(g_scenarios[i].confirm_timeframe),
+            TimeframeToString(g_scenarios[i].retest_timeframe)));
+     }
+     
+   g_is_trading = false;
+   g_active_scenario_index = -1;
+   g_ea_stopped = false;
+   
+   Print("=== [NẠP HOÀN TẤT] Tổng cộng ", g_scenarios_count, " kịch bản đã sẵn sàng giám sát! ===");
+   Print("--------------------------------------------------");
+  }
+
+//+------------------------------------------------------------------+
+//| Tính tổng lợi nhuận của kịch bản sau khi các lệnh đóng           |
+//+------------------------------------------------------------------+
+double CheckScenarioProfit(datetime start_time) {
+    HistorySelect(start_time, TimeCurrent() + 60);
+    double total_profit = 0;
+    for(int i = 0; i < HistoryDealsTotal(); i++) {
+        ulong ticket = HistoryDealGetTicket(i);
+        if(HistoryDealGetInteger(ticket, DEAL_MAGIC) == InpMagicNumber && HistoryDealGetString(ticket, DEAL_SYMBOL) == _Symbol) {
+            total_profit += HistoryDealGetDouble(ticket, DEAL_PROFIT) + HistoryDealGetDouble(ticket, DEAL_COMMISSION) + HistoryDealGetDouble(ticket, DEAL_SWAP);
+        }
+    }
+    return total_profit;
+}
+
+//+------------------------------------------------------------------+
+//| Dời SL về hòa vốn thực tế (Entry +/- Offset) khi cắn TP1         |
+//+------------------------------------------------------------------+
+void CheckAndMoveBreakeven(datetime start_time) {
+    bool tp_hit = false;
+    HistorySelect(start_time, TimeCurrent() + 60);
+    for(int i = 0; i < HistoryDealsTotal(); i++) {
+        ulong ticket = HistoryDealGetTicket(i);
+        if(HistoryDealGetInteger(ticket, DEAL_MAGIC) == InpMagicNumber && HistoryDealGetString(ticket, DEAL_SYMBOL) == _Symbol) {
+            if(HistoryDealGetInteger(ticket, DEAL_ENTRY) == DEAL_ENTRY_OUT || HistoryDealGetInteger(ticket, DEAL_ENTRY) == DEAL_ENTRY_INOUT) {
+                if(HistoryDealGetDouble(ticket, DEAL_PROFIT) > 0) {
+                    tp_hit = true;
+                    break;
+                }
+            }
+        }
+    }
+    
+    if(tp_hit) {
+        double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+        double offset = InpBreakevenOffset * point;
+        
+        for(int i = PositionsTotal() - 1; i >= 0; i--) {
+            ulong pos_ticket = PositionGetTicket(i);
+            if(PositionGetString(POSITION_SYMBOL) == _Symbol && PositionGetInteger(POSITION_MAGIC) == InpMagicNumber) {
+                double open_price = PositionGetDouble(POSITION_PRICE_OPEN);
+                double current_sl = PositionGetDouble(POSITION_SL);
+                double current_tp = PositionGetDouble(POSITION_TP);
+                long   type       = PositionGetInteger(POSITION_TYPE);
+                
+                double new_sl = 0;
+                bool need_modify = false;
+                
+                if(type == POSITION_TYPE_BUY) {
+                    new_sl = open_price + offset;
+                    if(current_sl < new_sl - 0.00001) need_modify = true;
+                }
+                else if(type == POSITION_TYPE_SELL) {
+                    new_sl = open_price - offset;
+                    if(current_sl > new_sl + 0.00001 || current_sl == 0) need_modify = true;
+                }
+                
+                if(need_modify) {
+                    if(trade.PositionModify(pos_ticket, new_sl, current_tp)) {
+                        Print("TP1 đã chốt 50%. Dời SL phần còn lại về hòa vốn (Entry + offset) tại ", new_sl, " cho lệnh #", pos_ticket);
+                    }
+                }
+            }
+        }
+    }
+}
+
+//+------------------------------------------------------------------+
+//| Check Invalidation (Giá quét SL trước khi vào lệnh)              |
+//+------------------------------------------------------------------+
+bool CheckInvalidation(int index, double bid, double ask) {
+    double sl = g_scenarios[index].sl;
+    ENUM_SCENARIO_TYPE type = g_scenarios[index].type;
+    
+    bool invalid = false;
+    if(type == REVERSAL_BUY || type == BREAKOUT_BUY) {
+        if(bid <= sl) invalid = true;
+    }
+    else if(type == REVERSAL_SELL || type == BREAKOUT_SELL) {
+        if(ask >= sl) invalid = true;
+    }
+    
+    if(invalid) {
+        g_scenarios[index].status = EXPIRED;
+        Print("Kịch bản [", g_scenarios[index].id, "] bị EXPIRED vì giá chạm SL trước khi có xác nhận.");
+        return true;
+    }
+    return false;
+}
+
+//+------------------------------------------------------------------+
+//| Check Missed Opportunity (Giá chạm TP1 mà chưa vào lệnh)         |
+//+------------------------------------------------------------------+
+bool CheckMissedOpportunity(int index, double bid, double ask) {
+    if(g_scenarios[index].tps_count == 0) return false;
+    
+    double tp1 = g_scenarios[index].tps[0];
+    ENUM_SCENARIO_TYPE type = g_scenarios[index].type;
+    
+    bool missed = false;
+    if(type == REVERSAL_SELL || type == BREAKOUT_SELL) {
+        if(tp1 > 0 && bid <= tp1) missed = true;
+    }
+    else if(type == REVERSAL_BUY || type == BREAKOUT_BUY) {
+        if(tp1 > 0 && ask >= tp1) missed = true;
+    }
+    
+    if(missed) {
+        g_scenarios[index].status = EXPIRED;
+        Print("Kịch bản [", g_scenarios[index].id, "] bị EXPIRED vì giá đã chạm TP1 (", DoubleToString(tp1, _Digits), ") mà không có tín hiệu vào lệnh (Bỏ lỡ cơ hội).");
+        return true;
+    }
+    return false;
+}
+
+//+------------------------------------------------------------------+
+//| Nến mới trên khung bất kỳ (last_bar truyền theo từng phase)      |
+//+------------------------------------------------------------------+
+bool IsNewBarOn(ENUM_TIMEFRAMES tf, datetime &last_bar)
+  {
+   datetime current_time = iTime(_Symbol, tf, 0);
+   if(current_time != last_bar)
+     {
+      if(last_bar != 0)
+        {
+         last_bar = current_time;
+         return true;
+        }
+      last_bar = current_time;
+     }
+   return false;
+  }
+
+bool IsNewBar(int index)
+  {
+   return IsNewBarOn(g_scenarios[index].confirm_timeframe, g_scenarios[index].last_bar_time);
+  }
+
+//+------------------------------------------------------------------+
+//| Pattern nến đóng [1] trên khung tf                               |
+//+------------------------------------------------------------------+
+bool CheckPatternOn(ENUM_TIMEFRAMES tf, string &patterns[], int count)
+  {
+   if(count <= 0)
+      return false;
+
+   double O1 = iOpen(_Symbol, tf, 1);
+   double H1 = iHigh(_Symbol, tf, 1);
+   double L1 = iLow(_Symbol, tf, 1);
+   double C1 = iClose(_Symbol, tf, 1);
+
+   double O2 = iOpen(_Symbol, tf, 2);
+   double C2 = iClose(_Symbol, tf, 2);
+
+   double total_len = H1 - L1;
+   if(total_len == 0)
+      total_len = 0.00001;
+   double body = MathAbs(O1 - C1);
+   double upper_wick = H1 - MathMax(O1, C1);
+   double lower_wick = MathMin(O1, C1) - L1;
+
+   for(int p = 0; p < count; p++)
+     {
+      string pat = patterns[p];
+
+      if(pat == "BULLISH_PINBAR")
+        {
+         if(lower_wick > 0.6 * total_len && body < 0.25 * total_len && C1 >= (H1 + L1) / 2.0)
+            return true;
+        }
+      else if(pat == "BEARISH_PINBAR")
+        {
+         if(upper_wick > 0.6 * total_len && body < 0.25 * total_len && C1 <= (H1 + L1) / 2.0)
+            return true;
+        }
+      else if(pat == "BULLISH_ENGULFING")
+        {
+         if(C2 < O2 && C1 > O1 && C1 > O2 && O1 < C2)
+            return true;
+        }
+      else if(pat == "BEARISH_ENGULFING")
+        {
+         if(C2 > O2 && C1 < O1 && C1 < O2 && O1 > C2)
+            return true;
+        }
+      else if(pat == "STRONG_BEARISH_MARUBOZU" || pat == "STRONG_BEARISH")
+        {
+         if(C1 < O1 && body / total_len > 0.75 && lower_wick / total_len < 0.10)
+            return true;
+        }
+      else if(pat == "STRONG_BULLISH_MARUBOZU" || pat == "STRONG_BULLISH")
+        {
+         if(C1 > O1 && body / total_len > 0.75 && upper_wick / total_len < 0.10)
+            return true;
+        }
+      else if(pat == "NO_LONG_LOWER_WICK")
+        {
+         if(lower_wick / total_len < 0.15)
+            return true;
+        }
+     }
+   return false;
+  }
+
+bool CheckPattern(int index)
+  {
+   return CheckPatternOn(g_scenarios[index].confirm_timeframe,
+                         g_scenarios[index].confirm_patterns,
+                         g_scenarios[index].patterns_count);
+  }
+
+//+------------------------------------------------------------------+
+//| Làm tròn lot THEO BƯỚC SÀN, làm tròn xuống để không vượt rủi ro  |
+//+------------------------------------------------------------------+
+double NormalizeVolumeFloor(double lots)
+  {
+   double vmin = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+   double vmax = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX);
+   double step = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
+   if(step <= 0.0)
+      step = 0.01;
+   lots = MathFloor(lots / step + 1e-12) * step;
+   lots = NormalizeDouble(lots, 8);
+   if(lots > vmax)
+      lots = vmax;
+   if(lots > 0.0 && lots < vmin)
+      lots = 0.0;
+   return lots;
+  }
+
+//+------------------------------------------------------------------+
+//| Lot tối đa sao cho lỗ khi cắn SL < InpMaxRiskMoney               |
+//+------------------------------------------------------------------+
+double CalcMaxLotsForRisk(ENUM_ORDER_TYPE order_type, double entry, double sl, double max_risk)
+  {
+   if(max_risk <= 0.0)
+      return 0.0;
+   double sl_dist = MathAbs(entry - sl);
+   if(sl_dist < SymbolInfoDouble(_Symbol, SYMBOL_POINT))
+      return 0.0;
+
+   double loss_1lot = 0.0;
+   if(!OrderCalcProfit(order_type, _Symbol, 1.0, entry, sl, loss_1lot))
+     {
+      double tick_size  = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
+      double tick_value = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
+      if(tick_size <= 0.0)
+         return 0.0;
+      loss_1lot = -(sl_dist / tick_size) * tick_value;
+     }
+
+   double per_lot = MathAbs(loss_1lot);
+   if(per_lot <= 0.0)
+      return 0.0;
+
+   double lots = NormalizeVolumeFloor(max_risk / per_lot);
+   double step = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
+   double vmin = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+   if(step <= 0.0)
+      step = 0.01;
+
+   double actual = 0.0;
+   while(lots >= vmin)
+     {
+      if(!OrderCalcProfit(order_type, _Symbol, lots, entry, sl, actual))
+         break;
+      if(MathAbs(actual) <= max_risk + 0.01)
+         break;
+      lots = NormalizeVolumeFloor(lots - step);
+     }
+
+   if(lots < vmin)
+      return 0.0;
+   return lots;
+  }
+
+//+------------------------------------------------------------------+
+//| Chia volume: TP1 làm tròn 50%, TP2 làm tròn 50% phần còn,        |
+//| TP3 nhận HẾT phần lẻ còn lại (không làm tròn xuống nữa).         |
+//+------------------------------------------------------------------+
+void SplitTpVolumes(double total_lots, int tp_count, double &vols[])
+  {
+   ArrayResize(vols, MathMax(tp_count, 1));
+   ArrayInitialize(vols, 0.0);
+   double vmin = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+
+   if(tp_count <= 1)
+     {
+      vols[0] = total_lots;
+      return;
+     }
+
+   vols[0] = NormalizeVolumeFloor(total_lots * 0.50);
+   if(vols[0] < vmin)
+     {
+      vols[0] = total_lots;
+      return;
+     }
+
+   if(tp_count == 2)
+     {
+      vols[1] = NormalizeDouble(total_lots - vols[0], 8);
+      if(vols[1] < vmin)
+        {
+         vols[0] = total_lots;
+         vols[1] = 0.0;
+        }
+      return;
+     }
+
+   double after_tp1 = NormalizeDouble(total_lots - vols[0], 8);
+   vols[1] = NormalizeVolumeFloor(after_tp1 * 0.50);
+   if(vols[1] < vmin)
+     {
+      vols[1] = after_tp1;
+      vols[2] = 0.0;
+      if(vols[1] < vmin)
+        {
+         vols[0] = total_lots;
+         vols[1] = 0.0;
+        }
+      return;
+     }
+
+   vols[2] = NormalizeDouble(total_lots - vols[0] - vols[1], 8);
+   if(vols[2] > 0.0 && vols[2] < vmin)
+     {
+      vols[1] = NormalizeDouble(vols[1] + vols[2], 8);
+      vols[2] = 0.0;
+     }
+  }
+
+//+------------------------------------------------------------------+
+//| Thực thi lệnh: lot theo rủi ro USD, chốt 50% / 25% / 25%         |
+//+------------------------------------------------------------------+
+void ExecuteTrade(int index)
+  {
+   ENUM_SCENARIO_TYPE type = g_scenarios[index].type;
+   double sl = g_scenarios[index].sl;
+   bool is_buy = (type == REVERSAL_BUY || type == BREAKOUT_BUY);
+   bool is_sell = (type == REVERSAL_SELL || type == BREAKOUT_SELL);
+   if(!is_buy && !is_sell)
+      return;
+
+   double entry = is_buy ? SymbolInfoDouble(_Symbol, SYMBOL_ASK)
+                         : SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   ENUM_ORDER_TYPE order_type = is_buy ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
+
+   if((is_buy && sl >= entry) || (is_sell && sl <= entry))
+     {
+      Print("CẢNH BÁO: SL không đúng phía so với giá vào. Bỏ kịch bản [", g_scenarios[index].id, "].");
+      g_scenarios[index].status = EXPIRED;
+      return;
+     }
+
+   double max_risk = g_scenarios[index].max_risk_usd;
+   if(max_risk <= 0.0 || max_risk > InpMaxRiskMoney)
+      max_risk = InpMaxRiskMoney;
+   double total_lots = CalcMaxLotsForRisk(order_type, entry, sl, max_risk);
+   double vmin = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+   if(total_lots < vmin)
+     {
+      Print("CẢNH BÁO: Không vào lệnh [", g_scenarios[index].id,
+            "] vì lot tối thiểu đã vượt rủi ro ", DoubleToString(max_risk, 2),
+            " USD (SL=", DoubleToString(sl, _Digits), " Entry=", DoubleToString(entry, _Digits), ").");
+      return;
+     }
+
+   int tps_count = g_scenarios[index].tps_count;
+   if(tps_count <= 0)
+      tps_count = 1;
+   if(tps_count > 3)
+      tps_count = 3;
+
+   double vols[];
+   SplitTpVolumes(total_lots, tps_count, vols);
+
+   double est_risk = 0.0;
+   OrderCalcProfit(order_type, _Symbol, total_lots, entry, sl, est_risk);
+   Print("=> [RISK] ", _Symbol,
+         " tick=", DoubleToString(SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE), 4),
+         " USD | Max=", DoubleToString(max_risk, 2),
+         " USD (EA cap ", DoubleToString(InpMaxRiskMoney, 2),
+         ") | Ước lượng lỗ nếu SL=", DoubleToString(MathAbs(est_risk), 2),
+         " USD | Tổng lot=", DoubleToString(total_lots, 2),
+         " | TP1 50%=", DoubleToString(vols[0], 2),
+         (ArraySize(vols) >= 2 && vols[1] > 0 ? " | TP2=" + DoubleToString(vols[1], 2) : ""),
+         (ArraySize(vols) >= 3 && vols[2] > 0 ? " | TP3 phần lẻ=" + DoubleToString(vols[2], 2) : ""));
+
+   int success_orders = 0;
+   for(int t = 0; t < tps_count; t++)
+     {
+      if(vols[t] < vmin)
+         continue;
+      double tp = (t < g_scenarios[index].tps_count) ? g_scenarios[index].tps[t] : 0;
+      string comment = "AI_" + g_scenarios[index].id + "_TP" + IntegerToString(t + 1);
+
+      bool res = false;
+      if(is_buy)
+         res = trade.Buy(vols[t], _Symbol, 0, sl, tp, comment);
+      else
+         res = trade.Sell(vols[t], _Symbol, 0, sl, tp, comment);
+      if(res)
+         success_orders++;
+      else
+         Print("Lỗi gửi lệnh TP", t + 1, " lot=", vols[t], " | ", GetLastError());
+     }
+
+   if(success_orders > 0)
+     {
+      g_scenarios[index].status = COMPLETED;
+      g_is_trading = true;
+      g_trade_start_time = TimeCurrent();
+      Print("Đã thực thi [", g_scenarios[index].id, "] với ", success_orders,
+            " lệnh (TP1 50% đã làm tròn, TP2 50% phần còn đã làm tròn, TP3 nhận hết phần lẻ). Theo dõi lệnh...");
+     }
+   else
+     {
+      Print("CẢNH BÁO: Không thể gửi lệnh cho kịch bản [", g_scenarios[index].id, "]. Mã lỗi: ", GetLastError());
+     }
+  }
+
+//+------------------------------------------------------------------+
+//| Xử lý Luồng REVERSAL                                             |
+//+------------------------------------------------------------------+
+void ProcessReversalScenario(int index, double bid, double ask) {
+    double min_z = g_scenarios[index].entry_min;
+    double max_z = g_scenarios[index].entry_max;
+    
+    if(!g_scenarios[index].ready_to_confirm) {
+        if((bid >= min_z && bid <= max_z) || (ask >= min_z && ask <= max_z)) {
+            g_scenarios[index].ready_to_confirm = true;
+            Print("Kịch bản [", g_scenarios[index].id, "] giá đã vào vùng Entry. Ready to Confirm.");
+        }
+        return;
+    }
+    
+    if(IsNewBar(index)) {
+        if(CheckPattern(index)) {
+            Print("Kịch bản [", g_scenarios[index].id, "] Đã xác nhận Pattern! Thực thi lệnh.");
+            ExecuteTrade(index);
+        }
+    }
+}
+
+//+------------------------------------------------------------------+
+//| Xử lý Luồng BREAKOUT: confirm → chờ retest → nến tiếp diễn       |
+//+------------------------------------------------------------------+
+void ProcessBreakoutScenario(int index, double bid, double ask)
+  {
+   double trigger = g_scenarios[index].trigger_price;
+   bool is_sell = (g_scenarios[index].type == BREAKOUT_SELL);
+   ENUM_TIMEFRAMES confirm_tf = g_scenarios[index].confirm_timeframe;
+   ENUM_TIMEFRAMES retest_tf  = g_scenarios[index].retest_timeframe;
+   if(retest_tf == PERIOD_CURRENT)
+      retest_tf = OneStepSmallerTf(confirm_tf);
+
+   // 1) Nến confirm đóng phá trigger (không đuổi)
+   if(!g_scenarios[index].breakout_confirmed)
+     {
+      if(IsNewBarOn(confirm_tf, g_scenarios[index].last_bar_time))
+        {
+         double close1 = iClose(_Symbol, confirm_tf, 1);
+         bool broke = is_sell ? (close1 < trigger) : (close1 > trigger);
+         if(!broke)
+            return;
+
+         bool pat_ok = true;
+         if(g_scenarios[index].patterns_count > 0)
+            pat_ok = CheckPatternOn(confirm_tf, g_scenarios[index].confirm_patterns, g_scenarios[index].patterns_count);
+         if(!pat_ok)
+           {
+            Print("Breakout [", g_scenarios[index].id, "] đóng phá trigger nhưng chưa khớp pattern confirm. Chờ nến ", TimeframeToString(confirm_tf), " tiếp.");
+            return;
+           }
+
+         g_scenarios[index].breakout_confirmed = true;
+         g_scenarios[index].retest_touched = false;
+         g_scenarios[index].last_retest_bar_time = iTime(_Symbol, retest_tf, 0);
+         Print("Breakout [", g_scenarios[index].id, "] CONFIRMED: ", TimeframeToString(confirm_tf),
+               " đóng ", DoubleToString(close1, _Digits), " qua trigger ", DoubleToString(trigger, _Digits),
+               ". Không đuổi. Chờ retest ", TimeframeToString(retest_tf), " hồi về trigger rồi nến tiếp diễn.");
+        }
+      return;
+     }
+
+   // 2) Giá hồi chạm lại trigger trên khung retest
+   if(!g_scenarios[index].retest_touched)
+     {
+      double high0 = iHigh(_Symbol, retest_tf, 0);
+      double low0  = iLow(_Symbol, retest_tf, 0);
+      bool touched = is_sell ? (high0 >= trigger || ask >= trigger)
+                             : (low0 <= trigger || bid <= trigger);
+      if(touched)
+        {
+         g_scenarios[index].retest_touched = true;
+         Print("Breakout [", g_scenarios[index].id, "] RETEST TOUCH trigger ", DoubleToString(trigger, _Digits),
+               " trên ", TimeframeToString(retest_tf), ". Chờ nến đóng xác nhận tiếp diễn.");
+        }
+      return;
+     }
+
+   // 3) Nến retest đóng: còn đúng phía phá vỡ + pattern tiếp diễn → vào lệnh
+   if(IsNewBarOn(retest_tf, g_scenarios[index].last_retest_bar_time))
+     {
+      double close1 = iClose(_Symbol, retest_tf, 1);
+      double open1  = iOpen(_Symbol, retest_tf, 1);
+      bool still_broken = is_sell ? (close1 < trigger) : (close1 > trigger);
+      if(!still_broken)
+        {
+         Print("Breakout [", g_scenarios[index].id, "] retest FAIL: nến ", TimeframeToString(retest_tf),
+               " đóng ngược lại trigger. Reset, chờ phá lại.");
+         g_scenarios[index].breakout_confirmed = false;
+         g_scenarios[index].retest_touched = false;
+         return;
+        }
+
+      bool pat_ok = true;
+      if(g_scenarios[index].retest_patterns_count > 0)
+         pat_ok = CheckPatternOn(retest_tf, g_scenarios[index].retest_patterns, g_scenarios[index].retest_patterns_count);
+      else
+         pat_ok = is_sell ? (close1 < open1) : (close1 > open1);
+
+      if(pat_ok)
+        {
+         Print("Breakout [", g_scenarios[index].id, "] RETEST CONTINUE trên ", TimeframeToString(retest_tf),
+               ". Vào lệnh.");
+         ExecuteTrade(index);
+        }
+      else
+        {
+         Print("Breakout [", g_scenarios[index].id, "] đã retest nhưng chưa có nến tiếp diễn. Chờ nến ",
+               TimeframeToString(retest_tf), " tiếp.");
+        }
+     }
+  }
+
+//+------------------------------------------------------------------+
+//| Giám sát và thực thi kế hoạch giao dịch                          |
+//+------------------------------------------------------------------+
+void MonitorScenarios() {
+    if(g_ea_stopped) return;
+    
+    double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+    double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+    
+    // NẾU ĐANG CÓ LỆNH -> Theo dõi lệnh & dời SL về hòa vốn
+    if(g_is_trading) {
+        if(HasOpenPositions()) {
+            CheckAndMoveBreakeven(g_trade_start_time);
+            return;
+        }
+        
+        // Lệnh đã đóng hết -> Kiểm tra kết quả Lời/Lỗ
+        double net_profit = CheckScenarioProfit(g_trade_start_time);
+        if(net_profit > 0) {
+            Print("Kịch bản [", g_scenarios[g_active_scenario_index].id, "] đã chốt lời (WIN) với profit: ", net_profit, ". Hoàn thành mục tiêu chu kỳ này.");
+            g_ea_stopped = true;
+            g_is_trading = false;
+            g_active_scenario_index = -1;
+        } else {
+            Print("Kịch bản [", g_scenarios[g_active_scenario_index].id, "] đã bị lỗ (LOSS) với profit: ", net_profit, ". Quay lại giám sát các kịch bản còn lại.");
+            g_is_trading = false;
+            g_active_scenario_index = -1;
+        }
+        return;
+    }
+    
+    // NẾU KHÔNG CÓ LỆNH -> Giám sát đồng thời các kịch bản đang PENDING
+    for(int i = 0; i < g_scenarios_count; i++) {
+        if(g_scenarios[i].status != PENDING) continue;
+        
+        if(CheckInvalidation(i, bid, ask)) continue;
+        if(CheckMissedOpportunity(i, bid, ask)) continue;
+        
+        if(g_scenarios[i].type == REVERSAL_BUY || g_scenarios[i].type == REVERSAL_SELL) {
+            ProcessReversalScenario(i, bid, ask);
+        }
+        else if(g_scenarios[i].type == BREAKOUT_BUY || g_scenarios[i].type == BREAKOUT_SELL) {
+            ProcessBreakoutScenario(i, bid, ask);
+        }
+        
+        if(g_is_trading) {
+            g_active_scenario_index = i;
+            break;
+        }
+    }
+}

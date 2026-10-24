@@ -29,6 +29,10 @@ public class SetTradingPlanRequest
     [JsonPropertyName("notify")]
     public bool Notify { get; set; } = true;
 
+    /// <summary>Trần lỗ chấp nhận mỗi lệnh (USD). 0 = lấy từ session / mặc định 100.</summary>
+    [JsonPropertyName("max_risk_usd")]
+    public decimal MaxRiskUsd { get; set; }
+
     public TradingPlanResponse ToPlan()
     {
         return new TradingPlanResponse
@@ -38,7 +42,8 @@ public class SetTradingPlanRequest
             Context = Context ?? string.Empty,
             Scenarios = Scenarios ?? new List<EaTradeScenario>(),
             SignalId = SignalId ?? string.Empty,
-            Source = TradingPlanSource.Manual
+            Source = TradingPlanSource.Manual,
+            MaxRiskUsd = MaxRiskUsd
         };
     }
 }

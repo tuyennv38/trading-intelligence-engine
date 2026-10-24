@@ -162,8 +162,12 @@ public class EaScenarioController : ControllerBase
             ? "Xuất prompt để set kịch bản thủ công qua PUT /api/v1/scenarios"
             : triggerReason.Trim();
 
+        var session = await _marketDataStore.GetSymbolSessionAsync(symbol);
+        var maxRiskUsd = TradingPlanResponse.NormalizeMaxRiskUsd(
+            session?.MaxRiskUsd ?? TradingPlanResponse.DefaultMaxRiskUsd);
         var systemPrompt = TradingPlanPromptBuilder.GetSystemPrompt();
-        var userPrompt = TradingPlanPromptBuilder.BuildUserPrompt(symbol, states, previousPlan, reason);
+        var userPrompt = TradingPlanPromptBuilder.BuildUserPrompt(
+            symbol, states, previousPlan, reason, maxRiskUsd, session?.Contract);
 
         return Ok(new
         {
@@ -173,6 +177,8 @@ public class EaScenarioController : ControllerBase
                 ? "Copy messages sang AI (json_object). JSON trả về PUT /api/v1/scenarios."
                 : stateError ?? "Chưa có data trong store. Vẫn dùng system_prompt; tự dán data vào user_prompt.",
             symbol,
+            max_risk_usd = maxRiskUsd,
+            contract = session?.Contract,
             put_endpoint = TradingPlanPromptBuilder.PutEndpoint,
             system_prompt = systemPrompt,
             user_prompt = userPrompt,
@@ -224,7 +230,12 @@ public class EaScenarioController : ControllerBase
         var signalId = string.IsNullOrWhiteSpace(request.SignalId)
             ? $"{DateTime.UtcNow:yyyyMMddHHmmss}_{symbol}"
             : request.SignalId.Trim();
-        plan.EnsureDefaults(symbol, signalId);
+        var sessionForRisk = await _marketDataStore.GetSymbolSessionAsync(symbol);
+        var cap = TradingPlanResponse.NormalizeMaxRiskUsd(
+            request.MaxRiskUsd > 0
+                ? request.MaxRiskUsd
+                : sessionForRisk?.MaxRiskUsd ?? TradingPlanResponse.DefaultMaxRiskUsd);
+        plan.EnsureDefaults(symbol, signalId, cap);
         plan.Source = TradingPlanSource.Manual;
 
         var errors = TradingPlanValidator.Validate(plan);
@@ -233,11 +244,10 @@ public class EaScenarioController : ControllerBase
 
         await _marketDataStore.SetLatestPlanAsync(symbol, plan);
 
-        var session = await _marketDataStore.GetSymbolSessionAsync(symbol);
-        if (session != null)
+        if (sessionForRisk != null)
         {
-            session.PlanRefreshInProgress = false;
-            await _marketDataStore.SetSymbolSessionAsync(symbol, session);
+            sessionForRisk.PlanRefreshInProgress = false;
+            await _marketDataStore.SetSymbolSessionAsync(symbol, sessionForRisk);
         }
 
         bool shouldNotify = notify ?? request.Notify;

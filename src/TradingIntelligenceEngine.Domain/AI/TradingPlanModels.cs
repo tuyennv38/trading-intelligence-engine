@@ -31,6 +31,12 @@ public class TradingPlanResponse
     [JsonPropertyName("source")]
     public string Source { get; set; } = TradingPlanSource.Ai;
 
+    /// <summary>Trần lỗ chấp nhận mỗi lệnh (USD). EA tính lot từ SL sao cho không vượt mức này.</summary>
+    [JsonPropertyName("max_risk_usd")]
+    public decimal MaxRiskUsd { get; set; }
+
+    public const decimal DefaultMaxRiskUsd = 100m;
+
     [JsonIgnore]
     public bool HasScenarios => Scenarios != null && Scenarios.Count > 0;
 
@@ -47,7 +53,10 @@ public class TradingPlanResponse
     [JsonIgnore]
     public bool HasNoTrade => Scenarios == null || Scenarios.Count == 0;
 
-    public void EnsureDefaults(string symbol, string signalId)
+    public static decimal NormalizeMaxRiskUsd(decimal value) =>
+        value > 0 ? decimal.Round(value, 2) : DefaultMaxRiskUsd;
+
+    public void EnsureDefaults(string symbol, string signalId, decimal maxRiskUsd)
     {
         Symbol = string.IsNullOrWhiteSpace(Symbol) ? symbol : Symbol;
         SignalId = signalId;
@@ -55,6 +64,14 @@ public class TradingPlanResponse
         Scenarios ??= new List<EaTradeScenario>();
         if (string.IsNullOrWhiteSpace(Source))
             Source = TradingPlanSource.Ai;
+
+        var cap = NormalizeMaxRiskUsd(maxRiskUsd);
+        if (MaxRiskUsd <= 0)
+            MaxRiskUsd = cap;
+        else if (MaxRiskUsd > cap)
+            MaxRiskUsd = cap;
+        else
+            MaxRiskUsd = decimal.Round(MaxRiskUsd, 2);
 
         for (int i = 0; i < Scenarios.Count; i++)
         {
@@ -64,8 +81,17 @@ public class TradingPlanResponse
             if (string.IsNullOrWhiteSpace(s.Status))
                 s.Status = EaScenarioStatus.Pending;
             s.TakeProfits ??= new List<decimal>();
+            if (s.TakeProfits.Count > 3)
+                s.TakeProfits = s.TakeProfits.Take(3).ToList();
             if (s.Confirmation != null)
                 s.Confirmation.Patterns ??= new List<string>();
+
+            if (s.MaxRiskUsd <= 0)
+                s.MaxRiskUsd = MaxRiskUsd;
+            else if (s.MaxRiskUsd > MaxRiskUsd)
+                s.MaxRiskUsd = MaxRiskUsd;
+            else
+                s.MaxRiskUsd = decimal.Round(s.MaxRiskUsd, 2);
 
             if (s.IsBreakout)
             {
@@ -128,6 +154,12 @@ public class EaTradeScenario
 
     [JsonPropertyName("sl")]
     public decimal StopLoss { get; set; }
+
+    /// <summary>
+    /// Lỗ chấp nhận của kịch bản này (USD). Có thể thấp hơn trần plan khi đánh ngược khung lớn. EA tính lot từ SL.
+    /// </summary>
+    [JsonPropertyName("max_risk_usd")]
+    public decimal MaxRiskUsd { get; set; }
 
     [JsonPropertyName("tps")]
     public List<decimal> TakeProfits { get; set; } = new();
@@ -254,6 +286,8 @@ public interface ITradingStrategistEngine
         Dictionary<string, MarketState.MarketState> multiTimeframeStates,
         TradingPlanResponse? previousPlan,
         string triggerReason,
+        decimal maxRiskUsd,
+        MarketData.SymbolContractSpec? contract,
         System.Threading.CancellationToken cancellationToken);
 }
 

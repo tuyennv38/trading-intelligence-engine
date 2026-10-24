@@ -11,6 +11,8 @@ public static class TradingPlanChatFormatter
         sb.AppendLine($"🚨 *KẾ HOẠCH GIAO DỊCH {symbol} ({originLine})* 🚨\n");
 
         sb.AppendLine($"*BIAS:* {plan.Bias}");
+        if (plan.MaxRiskUsd > 0)
+            sb.AppendLine($"*LỖ CHẤP NHẬN:* ${plan.MaxRiskUsd:0.##} / lệnh (EA tính lot từ SL)");
         sb.AppendLine($"*CONTEXT:* {plan.Context}\n");
 
         var sellScenarios = (plan.Scenarios ?? new List<EaTradeScenario>()).Where(s => s.IsSell).ToList();
@@ -71,6 +73,8 @@ public static class TradingPlanChatFormatter
 
         decimal slPts = Math.Abs(refPrice - s.StopLoss);
         sb.AppendLine($"  🛡  SL    : {s.StopLoss:0.00} (-{slPts:0.00} pts)");
+        if (s.MaxRiskUsd > 0)
+            sb.AppendLine($"  💰 Rủi ro : ${s.MaxRiskUsd:0.##} (lot theo SL, không vượt mức này)");
 
         if (s.TakeProfits != null && s.TakeProfits.Count > 0)
         {

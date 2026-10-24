@@ -96,8 +96,11 @@ public class AiNotificationJob : IAiNotificationJob
                 $"⏳ *{symbol}*\nĐang chờ AI lên kịch bản chi tiết.");
 
             var previousPlan = await _marketDataStore.GetLatestPlanAsync(symbol);
+            var session = await _marketDataStore.GetSymbolSessionAsync(symbol);
+            var maxRiskUsd = TradingPlanResponse.NormalizeMaxRiskUsd(
+                session?.MaxRiskUsd ?? TradingPlanResponse.DefaultMaxRiskUsd);
             var tradingPlan = await _aiStrategist.GeneratePlanAsync(
-                symbol, states, previousPlan, triggerReason, CancellationToken.None);
+                symbol, states, previousPlan, triggerReason, maxRiskUsd, session?.Contract, CancellationToken.None);
 
             var existing = await _marketDataStore.GetLatestPlanAsync(symbol);
             if (existing != null && existing.IsManual && existing.CreatedAt >= jobStartedAt)
@@ -108,7 +111,7 @@ public class AiNotificationJob : IAiNotificationJob
             }
 
             var signalId = $"{DateTime.UtcNow:yyyyMMddHHmmss}_{symbol.ToUpperInvariant()}";
-            tradingPlan.EnsureDefaults(symbol, signalId);
+            tradingPlan.EnsureDefaults(symbol, signalId, maxRiskUsd);
             tradingPlan.Source = TradingPlanSource.Ai;
 
             var origin = useAiStructure

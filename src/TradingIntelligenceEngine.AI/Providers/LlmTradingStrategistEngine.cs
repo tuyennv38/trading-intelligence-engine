@@ -9,6 +9,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using TradingIntelligenceEngine.Domain.AI;
 using TradingIntelligenceEngine.Domain.Configuration;
+using TradingIntelligenceEngine.Domain.MarketData;
 using TradingIntelligenceEngine.Domain.MarketState;
 
 namespace TradingIntelligenceEngine.AI.Providers;
@@ -29,9 +30,12 @@ public class LlmTradingStrategistEngine : ITradingStrategistEngine
         Dictionary<string, MarketState> multiTimeframeStates,
         TradingPlanResponse? previousPlan,
         string triggerReason,
+        decimal maxRiskUsd,
+        SymbolContractSpec? contract,
         CancellationToken cancellationToken)
     {
-        var prompt = TradingPlanPromptBuilder.BuildUserPrompt(symbol, multiTimeframeStates, previousPlan, triggerReason);
+        var prompt = TradingPlanPromptBuilder.BuildUserPrompt(
+            symbol, multiTimeframeStates, previousPlan, triggerReason, maxRiskUsd, contract);
         var (baseUrl, apiKey, model) = _options.Snapshot();
 
         if (string.IsNullOrWhiteSpace(baseUrl))

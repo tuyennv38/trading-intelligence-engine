@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using TradingIntelligenceEngine.Domain.MarketData;
 
 namespace TradingIntelligenceEngine.Domain.AI;
 
@@ -35,6 +36,7 @@ SCHEMA:
   ""symbol"": ""XAUUSD"",
   ""bias"": ""Bullish|Bearish|Neutral"",
   ""context"": ""Mô tả tiếng Việt: đa khung, BOS/CHOCH, thanh khoản, vì sao ưu tiên hướng này..."",
+  ""max_risk_usd"": 100,
   ""scenarios"": [
     {
       ""id"": ""scenario_sell_reversal_4170"",
@@ -43,6 +45,7 @@ SCHEMA:
       ""logic"": ""Giá đang quanh vùng phá vỡ 4170.267. Chờ nến Bearish Engulfing hoặc Pinbar rút chân trên M5/M15 tại 4170.267-4171.409 rồi Bán thuận xu hướng lớn."",
       ""entry_zone"": { ""min"": 4168.409, ""max"": 4171.409 },
       ""sl"": 4177.409,
+      ""max_risk_usd"": 100,
       ""tps"": [4150.666, 4110.677, 4066.341],
       ""confirmation"": {
         ""condition"": ""PRICE_IN_ZONE"",
@@ -58,6 +61,7 @@ SCHEMA:
       ""logic"": ""Chờ nến M15 đóng cửa dứt khoát dưới 4110.677. Không đuổi. Chờ giá hồi retest M5 về 4110.677 rồi nến M5 Bearish Engulfing/Pinbar tiếp diễn mới Bán."",
       ""trigger_price"": 4110.677,
       ""sl"": 4120.677,
+      ""max_risk_usd"": 100,
       ""tps"": [4090.0, 4070.0, 4050.0],
       ""confirmation"": {
         ""condition"": ""CLOSE_BELOW_TRIGGER"",
@@ -92,22 +96,38 @@ TRADING:
    Khi NO TRADE: bias có thể Neutral, context giải thích tiếng Việt vì sao đứng ngoài và cần chờ gì (ví dụ: chờ H4 đóng, chờ retest, chờ CHOCH).
 2. Chỉ ra kịch bản khi setup RÕ, giá lấy đúng BOS/CHOCH/liquidity — không bịa số.
 3. Không tạo kịch bản ngược chiều đè cùng 1 mức (tránh hedging).
-4. Mỗi kịch bản: 1 sl + 3 tps; zone rộng >= 3; SL cách mép zone 5..10; TP cách nhau >= 5; TP1 RR >= 1:1.
-5. Không gửi signal_id (server gán).";
+4. Mỗi kịch bản: 1 sl + ĐÚNG 3 tps (không 4). SL/TP/zone theo ĐƠN VỊ GIÁ của đúng cặp (point/tick) — không copy khoảng 5–10 của XAUUSD sang EURUSD/GBP. SL sát invalidation, tối thiểu stops_level. TP1 RR >= 1:1.
+5. Không gửi signal_id (server gán).
+6. RỦI RO + LOT THEO CẶP (max_risk_usd) — bắt buộc trên plan và từng kịch bản:
+   - Trần lỗ 1 lệnh do EA gửi. EA tính lot từ SL × tick_value × contract của ĐÚNG symbol. $100 trên XAUUSD ≠ cùng lot trên EURUSD. KHÔNG gửi trường lot.
+   - Thuận khung lớn: dùng hết trần, SL sát invalidation.
+   - Ngược khung lớn: dễ dính SL. Chỉ ra kịch bản nếu SL vẫn sát cấu trúc, TP1 RR ≥ 1:1, và hạ max_risk_usd còn khoảng 30–50% trần. Ghi rõ trong logic là đánh ngược + rủi ro đã giảm.
+   - Nếu SL quá xa khiến min lot của cặp đã lỗ hơn trần thì BỎ kịch bản — ưu tiên NO TRADE.
+   - Không tạo kịch bản ngược khung lớn chỉ vì M15 đẹp khi SL không vừa ngân sách của cặp đó.";
     }
 
     public static string BuildUserPrompt(
         string symbol,
         Dictionary<string, MarketState.MarketState>? multiTimeframeStates,
         TradingPlanResponse? previousPlan,
-        string? triggerReason)
+        string? triggerReason,
+        decimal maxRiskUsd,
+        SymbolContractSpec? contract)
     {
+        var risk = TradingPlanResponse.NormalizeMaxRiskUsd(maxRiskUsd);
         var sb = new StringBuilder();
         sb.AppendLine($"Lập kế hoạch giao dịch EA cho cặp {symbol}.");
-        sb.AppendLine("Trả JSON snake_case theo schema (symbol, bias, context, scenarios).");
+        sb.AppendLine("Trả JSON snake_case theo schema (symbol, bias, context, max_risk_usd, scenarios).");
         sb.AppendLine($"JSON copy thẳng vào {PutEndpoint}.");
         sb.AppendLine("context, name, logic phải là TIẾNG VIỆT chi tiết.");
         sb.AppendLine("Nếu chưa đủ điều kiện giao dịch: scenarios phải là mảng rỗng []. Không bịa kịch bản cho có.");
+        sb.AppendLine($"\nRỦI RO:");
+        sb.AppendLine($"- Trần lỗ chấp nhận mỗi lệnh: {risk} USD.");
+        sb.AppendLine("- EA tính lot theo hợp đồng của đúng cặp; bạn KHÔNG gửi lot. Ghi max_risk_usd trên plan (= trần) và trên từng kịch bản (<= trần).");
+        sb.AppendLine("- Thuận khung lớn: max_risk_usd = trần. Ngược khung lớn: chỉ setup SL sát cấu trúc + RR đủ, hạ max_risk_usd còn 30–50% trần; nếu SL quá xa với cặp này thì bỏ kịch bản / NO TRADE.");
+        sb.Append(contract != null
+            ? contract.ToPromptBlock(symbol, risk)
+            : new SymbolContractSpec().ToPromptBlock(symbol, risk));
 
         if (!string.IsNullOrWhiteSpace(triggerReason))
         {
@@ -164,6 +184,7 @@ TRADING:
             symbol = "XAUUSD",
             bias = "Bearish",
             context = "H4 CHOCH giảm, chờ retest cung rồi bán.",
+            max_risk_usd = 100,
             notify = true,
             scenarios = new object[]
             {
@@ -171,9 +192,10 @@ TRADING:
                 {
                     type = "REVERSAL_SELL",
                     name = "Sell retest cung H4",
-                    logic = "Giá retest vùng cung, nến M15 Bearish Engulfing rồi bán.",
+                    logic = "Giá retest vùng cung, nến M15 Bearish Engulfing rồi bán thuận H4.",
                     entry_zone = new { min = 2650.00m, max = 2655.00m },
                     sl = 2662.00m,
+                    max_risk_usd = 100,
                     tps = new[] { 2640.00m, 2630.00m, 2615.00m },
                     confirmation = new
                     {
@@ -190,6 +212,7 @@ TRADING:
                     logic = "Chờ M15 đóng dưới trigger. Không đuổi. Chờ M5 hồi về trigger rồi nến tiếp diễn mới bán.",
                     trigger_price = 4148.00m,
                     sl = 4158.00m,
+                    max_risk_usd = 100,
                     tps = new[] { 4135.00m, 4120.00m, 4095.00m },
                     confirmation = new
                     {
