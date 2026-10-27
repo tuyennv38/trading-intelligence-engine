@@ -81,8 +81,8 @@ public class TradingPlanResponse
             if (string.IsNullOrWhiteSpace(s.Status))
                 s.Status = EaScenarioStatus.Pending;
             s.TakeProfits ??= new List<decimal>();
-            if (s.TakeProfits.Count > 3)
-                s.TakeProfits = s.TakeProfits.Take(3).ToList();
+            if (s.TakeProfits.Count > 2)
+                s.TakeProfits = s.TakeProfits.Take(2).ToList();
             if (s.Confirmation != null)
                 s.Confirmation.Patterns ??= new List<string>();
 

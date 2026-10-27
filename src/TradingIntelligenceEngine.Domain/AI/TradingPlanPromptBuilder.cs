@@ -46,7 +46,7 @@ SCHEMA:
       ""entry_zone"": { ""min"": 4168.409, ""max"": 4171.409 },
       ""sl"": 4177.409,
       ""max_risk_usd"": 100,
-      ""tps"": [4150.666, 4110.677, 4066.341],
+      ""tps"": [4150.666, 4110.677],
       ""confirmation"": {
         ""condition"": ""PRICE_IN_ZONE"",
         ""timeframe"": ""M15"",
@@ -62,7 +62,7 @@ SCHEMA:
       ""trigger_price"": 4110.677,
       ""sl"": 4120.677,
       ""max_risk_usd"": 100,
-      ""tps"": [4090.0, 4070.0, 4050.0],
+      ""tps"": [4090.0, 4070.0],
       ""confirmation"": {
         ""condition"": ""CLOSE_BELOW_TRIGGER"",
         ""timeframe"": ""M15"",
@@ -96,7 +96,7 @@ TRADING:
    Khi NO TRADE: bias có thể Neutral, context giải thích tiếng Việt vì sao đứng ngoài và cần chờ gì (ví dụ: chờ H4 đóng, chờ retest, chờ CHOCH).
 2. Chỉ ra kịch bản khi setup RÕ, giá lấy đúng BOS/CHOCH/liquidity — không bịa số.
 3. Không tạo kịch bản ngược chiều đè cùng 1 mức (tránh hedging).
-4. Mỗi kịch bản: 1 sl + ĐÚNG 3 tps (không 4). SL/TP/zone theo ĐƠN VỊ GIÁ của đúng cặp (point/tick) — không copy khoảng 5–10 của XAUUSD sang EURUSD/GBP. SL sát invalidation, tối thiểu stops_level. TP1 RR >= 1:1.
+4. Mỗi kịch bản: 1 sl + ĐÚNG 2 tps (TP1 và TP2; BỎ HẲN TP3 vì target quá xa rất khó đạt). SL/TP/zone theo ĐƠN VỊ GIÁ của đúng cặp (point/tick) — không copy khoảng 5–10 của XAUUSD sang EURUSD/GBP. SL sát invalidation, tối thiểu stops_level. TP1 RR >= 1:1, TP2 tối ưu R:R hợp lý (thường 1:1.5 đến 1:2.5).
 5. Không gửi signal_id (server gán).
 6. RỦI RO + LOT THEO CẶP (max_risk_usd) — bắt buộc trên plan và từng kịch bản:
    - Trần lỗ 1 lệnh do EA gửi. EA tính lot từ SL × tick_value × contract của ĐÚNG symbol. $100 trên XAUUSD ≠ cùng lot trên EURUSD. KHÔNG gửi trường lot.
@@ -104,10 +104,12 @@ TRADING:
    - Ngược khung lớn: dễ dính SL. Chỉ ra kịch bản nếu SL vẫn sát cấu trúc, TP1 RR ≥ 1:1, và hạ max_risk_usd còn khoảng 30–50% trần. Ghi rõ trong logic là đánh ngược + rủi ro đã giảm.
    - Nếu SL quá xa khiến min lot của cặp đã lỗ hơn trần thì BỎ kịch bản — ưu tiên NO TRADE.
    - Không tạo kịch bản ngược khung lớn chỉ vì M15 đẹp khi SL không vừa ngân sách của cặp đó.
-7. TAKE PROFIT — CHỌN NHƯ BÌNH THƯỜNG, RỒI DỊCH SỚM MỘT CHÚT:
-   - Cách chọn TP không đổi (cấu trúc / RR / ý đồ kịch bản). Không bắt TP phải là kháng cự hay hỗ trợ.
-   - Sau khi có 3 mức: dịch mỗi TP về phía entry một đoạn max(3×spread, 8×tick), không quá 20% khoảng entry→TP, để trừ spread sàn cho dễ cắn.
-   - BUY: TP giảm một chút. SELL: TP tăng một chút. Không kéo TP về sát entry.";
+7. TAKE PROFIT — ĐẶT SỚM HƠN VÙNG KHÁNG CỰ / HỖ TRỢ ÍT NHẤT 1 GIÁ (KHÔNG ĐẶT SÁT CẢN):
+   - Khi chọn target TP dựa trên đỉnh/đáy cũ, kháng cự hoặc hỗ trợ: TUYỆT ĐỐI KHÔNG đặt TP nằm sát sạt ngay mép hoặc đỉnh vùng cản (vì giá rất thường đảo chiều trước khi chạm cản hoặc bị spread cản trở, dẫn đến hụt TP trong gang tấc).
+   - Sau khi có 2 mức (TP1 và TP2): luôn đặt TP sớm hơn (thụt lùi về phía entry) ít nhất 1 giá (1.0 USD đối với XAUUSD/GOLD, hoặc 10 pips/100 points với Forex) trước vùng cản để đảm bảo lệnh dễ cắn TP.
+   - BUY: TP phải nằm dưới mức kháng cự / đỉnh cũ ít nhất 1 giá. Ví dụ kháng cự 2750.00 thì TP tối đa 2749.00 hoặc thấp hơn.
+   - SELL: TP phải nằm trên mức hỗ trợ / đáy cũ ít nhất 1 giá. Ví dụ hỗ trợ 2720.00 thì TP tối thiểu 2721.00 hoặc cao hơn.
+   - Đảm bảo tỷ lệ R:R của TP1 vẫn >= 1:1 sau khi trừ hao.";
     }
 
     public static string BuildUserPrompt(
@@ -132,10 +134,12 @@ TRADING:
         sb.Append(contract != null
             ? contract.ToPromptBlock(symbol, risk)
             : new SymbolContractSpec().ToPromptBlock(symbol, risk));
-        sb.AppendLine("TAKE PROFIT:");
-        sb.AppendLine("- Chọn TP như bình thường. Sau đó dịch mỗi mức về phía entry (BUY giảm / SELL tăng) một đoạn max(3×spread, 8×tick) để trừ spread — không đổi ý đồ TP, không gán TP = kháng cự/hỗ trợ.");
+        sb.AppendLine("TAKE PROFIT (ĐÚNG 2 MỨC: TP1 & TP2, BỎ TP3):");
+        sb.AppendLine("- Mỗi kịch bản chỉ tạo ĐÚNG 2 mức Take Profit: TP1 và TP2 (không gửi TP3 vì quá xa khó đạt).");
+        sb.AppendLine("- ĐẶT TP SỚM HƠN VÙNG KHÁNG CỰ / HỖ TRỢ ÍT NHẤT 1 GIÁ (1.0 USD với XAUUSD, hoặc 10 pips với Forex) thay vì đặt sát cản, để trừ hao đảo chiều sớm và spread, giúp lệnh dễ cắn TP.");
+        sb.AppendLine("- BUY: TP nằm dưới kháng cự ít nhất 1 giá. SELL: TP nằm trên hỗ trợ ít nhất 1 giá.");
         if (contract != null && (contract.SpreadPrice > 0 || contract.TickSize > 0))
-            sb.AppendLine($"- Spread ≈ {contract.SpreadPrice.ToString("0.########", System.Globalization.CultureInfo.InvariantCulture)} → dịch sớm ≈ {contract.TpEarlyOffset().ToString("0.########", System.Globalization.CultureInfo.InvariantCulture)}.");
+            sb.AppendLine($"- Spread ≈ {contract.SpreadPrice.ToString("0.########", System.Globalization.CultureInfo.InvariantCulture)} → mức trừ hao dịch sớm tối thiểu ≈ {contract.TpEarlyOffset(0, symbol).ToString("0.########", System.Globalization.CultureInfo.InvariantCulture)}.");
 
         if (!string.IsNullOrWhiteSpace(triggerReason))
         {
@@ -204,7 +208,7 @@ TRADING:
                     entry_zone = new { min = 2650.00m, max = 2655.00m },
                     sl = 2662.00m,
                     max_risk_usd = 100,
-                    tps = new[] { 2640.00m, 2630.00m, 2615.00m },
+                    tps = new[] { 2640.00m, 2630.00m },
                     confirmation = new
                     {
                         condition = "PRICE_IN_ZONE",
@@ -221,7 +225,7 @@ TRADING:
                     trigger_price = 4148.00m,
                     sl = 4158.00m,
                     max_risk_usd = 100,
-                    tps = new[] { 4135.00m, 4120.00m, 4095.00m },
+                    tps = new[] { 4135.00m, 4120.00m },
                     confirmation = new
                     {
                         condition = "CLOSE_BELOW_TRIGGER",

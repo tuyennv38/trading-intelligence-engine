@@ -1,9 +1,11 @@
+using System;
 using TradingIntelligenceEngine.Domain.MarketData;
 
 namespace TradingIntelligenceEngine.Domain.AI;
 
 /// <summary>
-/// Giữ nguyên cách chọn TP, chỉ dịch mỗi mức về phía entry một chút để trừ spread.
+/// Dịch các mức TP về phía entry tối thiểu 1 giá (với XAUUSD là 1.0 USD, hoặc 10 pips với Forex)
+/// để tránh hụt TP do đặt sát mép kháng cự/hỗ trợ hoặc do spread sàn.
 /// </summary>
 public static class TakeProfitPlanner
 {
@@ -11,6 +13,10 @@ public static class TakeProfitPlanner
     {
         if (plan?.Scenarios == null || plan.Scenarios.Count == 0)
             return;
+
+        var symbol = plan.Symbol ?? "";
+        var isGold = symbol.Contains("XAU", StringComparison.OrdinalIgnoreCase) ||
+                     symbol.Contains("GOLD", StringComparison.OrdinalIgnoreCase);
 
         foreach (var s in plan.Scenarios)
         {
@@ -33,7 +39,17 @@ public static class TakeProfitPlanner
                 if (!buy && tp >= entry)
                     continue;
 
-                var pull = contract?.TpEarlyOffset(dist) ?? Math.Min(dist * 0.10m, 0.01m * 8m);
+                decimal pull;
+                if (contract != null)
+                {
+                    pull = contract.TpEarlyOffset(dist, symbol);
+                }
+                else
+                {
+                    var fallbackOffset = isGold ? 1.0m : 0.0010m;
+                    pull = Math.Min(dist * 0.25m, fallbackOffset);
+                }
+
                 if (pull <= 0)
                     continue;
 

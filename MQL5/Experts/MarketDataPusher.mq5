@@ -12,7 +12,8 @@
 //--- Cài đặt API ---
 input string BaseUrl         = "https://botai.cscmobicorp.com";
 input bool   InpUseAiStructure = true;             // Sử dụng AI Structure (Gửi trường "useAiStructure" trong /initialize)
-input bool   InpCallInitialize = false;            // true = gọi /initialize lúc OnInit. false = bỏ qua init (vẫn poll kịch bản + /update)
+input bool   InpCallInitialize = false;            // true = gọi /initialize lúc OnInit. false = bỏ qua init
+input bool   InpCallUpdate     = true;             // true = gửi dữ liệu /update sau mỗi nến Trigger. false = tắt gửi /update
 
 //--- Cài đặt Giao Dịch & Quản Lý Kịch Bản AI ---
 input double InpMaxRiskMoney     = 100.0;            // Số tiền chịu rủi ro tối đa 1 lần vào lệnh (USD). Lot tính từ SL, không được vượt mức này.
@@ -626,8 +627,8 @@ void OnTick()
    else if(current_trigger_time != last_trigger_time)
      {
       last_trigger_time = current_trigger_time;
-      // Tạm tắt: không gọi /update
-      // SendMarketDataUpdate();
+      if(InpCallUpdate)
+         SendMarketDataUpdate();
      }
 
    // 2. Định kỳ kiểm tra kịch bản mới từ API (nếu chưa có lệnh nào đang chạy)

@@ -33,14 +33,31 @@ public class SymbolContractSpec
             : (Point > 0 && SpreadPoints > 0 ? SpreadPoints * Point : 0);
 
     /// <summary>
-    /// Dịch TP sớm về phía entry: max(3×spread, 8×tick), không quá 20% khoảng entry→TP.
+    /// Dịch TP sớm về phía entry: tối thiểu 1 giá (1.0 USD cho XAUUSD, hoặc 10 pips cho FX), max(3×spread, offset), không quá 25% khoảng entry→TP.
     /// </summary>
-    public decimal TpEarlyOffset(decimal tpDistance = 0)
+    public decimal TpEarlyOffset(decimal tpDistance = 0, string? symbol = null)
     {
         var tick = TickSize > 0 ? TickSize : (Point > 0 ? Point : 0.01m);
-        var v = Math.Max(SpreadPrice * 3m, tick * 8m);
+        var point = Point > 0 ? Point : (TickSize > 0 ? TickSize : 0.01m);
+
+        decimal onePriceOffset;
+        var sym = (symbol ?? "").Trim().ToUpperInvariant();
+        if (sym.Contains("XAU") || sym.Contains("GOLD") || (Digits == 2 && tick == 0.01m))
+        {
+            onePriceOffset = 1.0m; // 1 giá Vàng = 1.0 USD
+        }
+        else if (point > 0)
+        {
+            onePriceOffset = point * 100m; // 100 points = 10 pips trên Forex
+        }
+        else
+        {
+            onePriceOffset = 1.0m;
+        }
+
+        var v = Math.Max(onePriceOffset, Math.Max(SpreadPrice * 3m, tick * 8m));
         if (tpDistance > 0)
-            v = Math.Min(v, tpDistance * 0.20m);
+            v = Math.Min(v, tpDistance * 0.25m);
 
         var digits = Digits > 0 ? Digits : 2;
         return decimal.Round(v, digits);
@@ -88,7 +105,7 @@ public class SymbolContractSpec
 
         sb.AppendLine($"- digits={Digits}, point={Fmt(Point)}, tick_size={Fmt(TickSize)}, tick_value={Fmt(TickValue)} USD mỗi 1 tick trên 1.0 lot, contract_size={Fmt(ContractSize)}");
         sb.AppendLine($"- volume min={Fmt(VolumeMin)} step={Fmt(VolumeStep)} max={Fmt(VolumeMax)}; stops_level={StopsLevel} points");
-        sb.AppendLine($"- spread ≈ {Fmt(SpreadPrice)} ({SpreadPoints} points). Sau khi chọn TP xong, dịch mỗi mức về phía entry ≈ {Fmt(TpEarlyOffset())} (3×spread hoặc 8×tick) để trừ spread — không đổi logic chọn TP.");
+        sb.AppendLine($"- spread ≈ {Fmt(SpreadPrice)} ({SpreadPoints} points). Sau khi chọn TP, dịch mỗi mức về phía entry tối thiểu 1 giá (≈ {Fmt(TpEarlyOffset(0, symbol))}) thay vì đặt sát cản, giúp lệnh dễ cắn TP.");
         sb.AppendLine("- EA tính: lỗ_1_lot = (khoảng_SL / tick_size) × tick_value; lot = floor(max_risk_usd / lỗ_1_lot) theo volume_step. KHÔNG gửi trường lot.");
 
         AppendWorkedExample(sb, maxRiskUsd, 100);
