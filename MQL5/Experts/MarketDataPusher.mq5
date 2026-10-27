@@ -4,7 +4,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Tuyen PC"
 #property link      ""
-#property version   "1.08"
+#property version   "1.14"
 
 #include <Trade\Trade.mqh>
 #include <JAson.mqh>
@@ -12,6 +12,7 @@
 //--- Cài đặt API ---
 input string BaseUrl         = "https://botai.cscmobicorp.com";
 input bool   InpUseAiStructure = true;             // Sử dụng AI Structure (Gửi trường "useAiStructure" trong /initialize)
+input bool   InpCallInitialize = false;            // true = gọi /initialize lúc OnInit. false = bỏ qua init (vẫn poll kịch bản + /update)
 
 //--- Cài đặt Giao Dịch & Quản Lý Kịch Bản AI ---
 input double InpMaxRiskMoney     = 100.0;            // Số tiền chịu rủi ro tối đa 1 lần vào lệnh (USD). Lot tính từ SL, không được vượt mức này.
@@ -19,6 +20,13 @@ input ulong  InpMagicNumber      = 123456;           // Magic Number
 input int    InpSlippage         = 10;               // Slippage
 input int    InpBreakevenOffset  = 20;               // Bù trừ hòa vốn (Points) để bù phí khi dời SL sau TP1
 input int    InpCheckScenarioSec = 60;               // Thời gian gọi API kiểm tra kịch bản mới (giây) - Mặc định 60s
+input int    InpMaxConfirmBars   = 8;                // Tối đa nến confirm sau khi giá vào zone (REVERSAL). 0 = không giới hạn
+input int    InpMaxRetestBars    = 12;               // Tối đa nến retest sau khi phá (BREAKOUT). 0 = không giới hạn
+
+//--- Quản lý Chốt lời Bậc thang & Thoát sớm (2 TP + Early BE + Reversal Exit) ---
+input bool   InpEnableSmallTfExit       = true;      // Thoát sạch lệnh khi nến khung nhỏ đảo chiều trước khi tới TP2
+input bool   InpSmallTfExitInProfitOnly = true;      // Chỉ thoát đảo chiều khung nhỏ khi tổng vị thế đang có lãi dương
+input bool   InpLockTp1ToHalfOnTp1Hit   = true;      // Khóa lãi: Kéo SL lệnh TP2 lên mốc 50% TP1 khi TP1 đã cắn
 
 //--- Cài đặt khung thời gian kích hoạt (Trigger) cập nhật ---
 input ENUM_TIMEFRAMES InpTriggerTimeframe = PERIOD_M1; // Scalping: mỗi nến M1 đóng thì /update
@@ -99,6 +107,12 @@ struct Scenario {
     bool                 ready_to_confirm;
     bool                 breakout_confirmed;   // nến confirm đã đóng phá trigger
     bool                 retest_touched;       // giá đã hồi chạm lại trigger
+    int                  confirm_wait_bars;    // số nến confirm đã chờ sau khi vào zone
+    int                  retest_wait_bars;     // số nến retest đã chờ sau khi phá
+    bool                 reversal_mid_filled;  // đã vào 50% lot khi chạm giữa zone
+    bool                 reversal_confirm_filled;
+    double               planned_lots;
+    double               filled_lots;
     datetime             last_bar_time;
     datetime             last_retest_bar_time;
 };
@@ -109,6 +123,7 @@ int      g_scenarios_count = 0;
 string   g_current_signal_id = "";        // Lưu signal_id đang xử lý
 bool     g_is_trading = false;           // Đang có lệnh chạy hay không
 datetime g_trade_start_time = 0;         // Thời điểm bắt đầu vào lệnh
+datetime g_last_small_tf_bar = 0;        // Nến khung nhỏ đã kiểm tra tín hiệu đảo chiều
 int      g_active_scenario_index = -1;   // Kịch bản nào đang khớp lệnh
 bool     g_ea_stopped = false;           // Đã hoàn thành (Win)
 datetime g_last_scenario_check = 0;      // Thời điểm kiểm tra API kịch bản gần nhất
@@ -167,10 +182,10 @@ bool IsAllScenariosFinished() {
     // Nếu EA đã dừng vì chốt lời (WIN) -> Toàn bộ kịch bản đã xong
     if(g_ea_stopped) return true;
     
-    // Đếm số kịch bản còn đang chờ (PENDING)
     int pending_count = 0;
     for(int i = 0; i < g_scenarios_count; i++) {
-        if(g_scenarios[i].status == PENDING) pending_count++;
+        if(g_scenarios[i].status == PENDING || g_scenarios[i].status == ACTIVE)
+            pending_count++;
     }
     
     return (pending_count == 0);
@@ -451,8 +466,10 @@ int OnInit()
         }
      }
    
-   // Gọi Init lần đầu khi EA vừa được ném vào Chart (sau khi các handle Indicator đã được tạo)
-   SendMarketDataInitialize(true);
+   if(InpCallInitialize)
+      SendMarketDataInitialize(true);
+   else
+      Print("Bỏ qua /initialize (InpCallInitialize=false). Vẫn poll kịch bản từ API.");
    
    // Khởi tạo thời gian của nến Trigger hiện tại để bắt đầu theo dõi ở OnTick
    last_trigger_time = iTime(_Symbol, InpTriggerTimeframe, 0);
@@ -609,7 +626,8 @@ void OnTick()
    else if(current_trigger_time != last_trigger_time)
      {
       last_trigger_time = current_trigger_time;
-      SendMarketDataUpdate();
+      // Tạm tắt: không gọi /update
+      // SendMarketDataUpdate();
      }
 
    // 2. Định kỳ kiểm tra kịch bản mới từ API (nếu chưa có lệnh nào đang chạy)
@@ -815,9 +833,9 @@ void ParseAndLoadScenarioJson(string json_str)
       g_scenarios[i].tps_count = 0;
       if(tps != NULL && tps.type == jtARRAY)
         {
-         if(tps.Size() > 3)
-            Print("[SCENARIO] [", g_scenarios[i].id, "] có ", tps.Size(), " TP — chỉ lấy 3 mức đầu (TP1/TP2/TP3).");
-         int tp_size = MathMin(3, tps.Size());
+         if(tps.Size() > 2)
+            Print("[SCENARIO] [", g_scenarios[i].id, "] có ", tps.Size(), " TP — áp dụng mô hình 2 TP tối ưu (bỏ qua TP3).");
+         int tp_size = MathMin(2, tps.Size());
          for(int t=0; t<tp_size; t++)
            {
             g_scenarios[i].tps[t] = tps[t].ToDbl();
@@ -879,6 +897,12 @@ void ParseAndLoadScenarioJson(string json_str)
       g_scenarios[i].ready_to_confirm = false;
       g_scenarios[i].breakout_confirmed = false;
       g_scenarios[i].retest_touched = false;
+      g_scenarios[i].confirm_wait_bars = 0;
+      g_scenarios[i].retest_wait_bars = 0;
+      g_scenarios[i].reversal_mid_filled = false;
+      g_scenarios[i].reversal_confirm_filled = false;
+      g_scenarios[i].planned_lots = 0.0;
+      g_scenarios[i].filled_lots = 0.0;
       g_scenarios[i].last_bar_time = 0;
       g_scenarios[i].last_retest_bar_time = 0;
       
@@ -891,6 +915,7 @@ void ParseAndLoadScenarioJson(string json_str)
    g_is_trading = false;
    g_active_scenario_index = -1;
    g_ea_stopped = false;
+   g_trade_start_time = 0;
    
    Print("=== [NẠP HOÀN TẤT] Tổng cộng ", g_scenarios_count, " kịch bản đã sẵn sàng giám sát! ===");
    Print("--------------------------------------------------");
@@ -912,54 +937,193 @@ double CheckScenarioProfit(datetime start_time) {
 }
 
 //+------------------------------------------------------------------+
-//| Dời SL về hòa vốn thực tế (Entry +/- Offset) khi cắn TP1         |
+//| Dời SL về hòa vốn thực tế (Entry +/- Offset) khi đạt 50% TP1     |
+//| Khóa lãi lên mốc 50% TP1 khi TP1 đã cắn xong                      |
 //+------------------------------------------------------------------+
 void CheckAndMoveBreakeven(datetime start_time) {
-    bool tp_hit = false;
+    int profitable_deals = 0;
     HistorySelect(start_time, TimeCurrent() + 60);
     for(int i = 0; i < HistoryDealsTotal(); i++) {
         ulong ticket = HistoryDealGetTicket(i);
         if(HistoryDealGetInteger(ticket, DEAL_MAGIC) == InpMagicNumber && HistoryDealGetString(ticket, DEAL_SYMBOL) == _Symbol) {
             if(HistoryDealGetInteger(ticket, DEAL_ENTRY) == DEAL_ENTRY_OUT || HistoryDealGetInteger(ticket, DEAL_ENTRY) == DEAL_ENTRY_INOUT) {
                 if(HistoryDealGetDouble(ticket, DEAL_PROFIT) > 0) {
-                    tp_hit = true;
-                    break;
+                    profitable_deals++;
                 }
             }
         }
     }
     
-    if(tp_hit) {
-        double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
-        double offset = InpBreakevenOffset * point;
-        
-        for(int i = PositionsTotal() - 1; i >= 0; i--) {
-            ulong pos_ticket = PositionGetTicket(i);
-            if(PositionGetString(POSITION_SYMBOL) == _Symbol && PositionGetInteger(POSITION_MAGIC) == InpMagicNumber) {
-                double open_price = PositionGetDouble(POSITION_PRICE_OPEN);
-                double current_sl = PositionGetDouble(POSITION_SL);
-                double current_tp = PositionGetDouble(POSITION_TP);
-                long   type       = PositionGetInteger(POSITION_TYPE);
-                
-                double new_sl = 0;
-                bool need_modify = false;
-                
-                if(type == POSITION_TYPE_BUY) {
-                    new_sl = open_price + offset;
-                    if(current_sl < new_sl - 0.00001) need_modify = true;
-                }
-                else if(type == POSITION_TYPE_SELL) {
-                    new_sl = open_price - offset;
-                    if(current_sl > new_sl + 0.00001 || current_sl == 0) need_modify = true;
-                }
-                
-                if(need_modify) {
-                    if(trade.PositionModify(pos_ticket, new_sl, current_tp)) {
-                        Print("TP1 đã chốt 50%. Dời SL phần còn lại về hòa vốn (Entry + offset) tại ", new_sl, " cho lệnh #", pos_ticket);
-                    }
+    int ai = g_active_scenario_index;
+    double tp1 = (ai >= 0 && ai < g_scenarios_count && g_scenarios[ai].tps_count > 0) ? g_scenarios[ai].tps[0] : 0.0;
+    
+    double point  = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+    double offset = InpBreakevenOffset * point;
+    double bid    = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+    double ask    = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+    
+    for(int i = PositionsTotal() - 1; i >= 0; i--) {
+        ulong pos_ticket = PositionGetTicket(i);
+        if(PositionGetString(POSITION_SYMBOL) == _Symbol && PositionGetInteger(POSITION_MAGIC) == InpMagicNumber) {
+            double open_price = PositionGetDouble(POSITION_PRICE_OPEN);
+            double current_sl = PositionGetDouble(POSITION_SL);
+            double current_tp = PositionGetDouble(POSITION_TP);
+            long   type       = PositionGetInteger(POSITION_TYPE);
+            
+            double tp_half = 0.0;
+            if(tp1 > 0.0) {
+                if(type == POSITION_TYPE_BUY)
+                    tp_half = open_price + (tp1 - open_price) * 0.5;
+                else
+                    tp_half = open_price - (open_price - tp1) * 0.5;
+            }
+            
+            bool reached_half = (profitable_deals >= 1);
+            if(!reached_half && tp_half > 0.0) {
+                if(type == POSITION_TYPE_BUY && bid >= tp_half) reached_half = true;
+                else if(type == POSITION_TYPE_SELL && ask <= tp_half) reached_half = true;
+            }
+            
+            if(!reached_half) continue;
+            
+            double target_sl = 0;
+            string log_action = "";
+            
+            // Nếu đã chốt từ 2 lệnh trở lên (tức cả 50% TP1 và TP1 đều đã cắn)
+            // Khóa lãi lệnh TP2 còn lại lên mốc 50% TP1
+            if(InpLockTp1ToHalfOnTp1Hit && profitable_deals >= 2 && tp_half > 0.0) {
+                target_sl = tp_half;
+                log_action = "TP1 đã cắn 100%. Khóa lãi lệnh TP2 tại mốc 50% TP1 (" + DoubleToString(tp_half, _Digits) + ")";
+            } else {
+                // Đạt 50% TP1: Dời SL về hòa vốn (Entry +/- Offset)
+                if(type == POSITION_TYPE_BUY)
+                    target_sl = open_price + offset;
+                else if(type == POSITION_TYPE_SELL)
+                    target_sl = open_price - offset;
+                log_action = "Đạt 50% TP1. Dời SL về hòa vốn (" + DoubleToString(target_sl, _Digits) + ")";
+            }
+            
+            bool need_modify = false;
+            if(type == POSITION_TYPE_BUY) {
+                if(current_sl < target_sl - point) need_modify = true;
+            } else if(type == POSITION_TYPE_SELL) {
+                if(current_sl > target_sl + point || current_sl == 0) need_modify = true;
+            }
+            
+            if(need_modify) {
+                if(trade.PositionModify(pos_ticket, NormalizeDouble(target_sl, _Digits), current_tp)) {
+                    Print(log_action, " cho lệnh #", pos_ticket);
                 }
             }
         }
+    }
+}
+
+//+------------------------------------------------------------------+
+//| Đóng sạch toàn bộ vị thế của EA                                  |
+//+------------------------------------------------------------------+
+void CloseAllPositions(string reason) {
+    Print("=> ĐANG THỰC HIỆN ĐÓNG SẠCH TOÀN BỘ VỊ THẾ: ", reason);
+    for(int i = PositionsTotal() - 1; i >= 0; i--) {
+        ulong ticket = PositionGetTicket(i);
+        if(ticket == 0) continue;
+        if(PositionGetString(POSITION_SYMBOL) == _Symbol && PositionGetInteger(POSITION_MAGIC) == InpMagicNumber) {
+            if(!trade.PositionClose(ticket))
+                Print("Lỗi đóng vị thế #", ticket, " | Error=", GetLastError());
+        }
+    }
+}
+
+//+------------------------------------------------------------------+
+//| Kiểm tra nến khung nhỏ có tín hiệu ĐẢO CHIỀU ngược vị thế không  |
+//| is_buy: Vị thế BUY -> tìm nến đảo chiều GIẢM                     |
+//|         Vị thế SELL -> tìm nến đảo chiều TĂNG                    |
+//+------------------------------------------------------------------+
+bool DetectReversalSignalOnSmallTf(ENUM_TIMEFRAMES small_tf, bool is_buy) {
+    double O1 = iOpen(_Symbol, small_tf, 1);
+    double H1 = iHigh(_Symbol, small_tf, 1);
+    double L1 = iLow(_Symbol, small_tf, 1);
+    double C1 = iClose(_Symbol, small_tf, 1);
+
+    double O2 = iOpen(_Symbol, small_tf, 2);
+    double H2 = iHigh(_Symbol, small_tf, 2);
+    double L2 = iLow(_Symbol, small_tf, 2);
+    double C2 = iClose(_Symbol, small_tf, 2);
+
+    double total_len = H1 - L1;
+    if(total_len <= 0) total_len = _Point;
+
+    double body = MathAbs(O1 - C1);
+    double upper_wick = H1 - MathMax(O1, C1);
+    double lower_wick = MathMin(O1, C1) - L1;
+
+    if(is_buy) {
+        // Đang BUY -> Tìm tín hiệu đảo chiều GIẢM
+        bool bear_pin    = (upper_wick > 0.6 * total_len && body < 0.25 * total_len && C1 <= (H1 + L1) / 2.0);
+        bool bear_eng    = (C2 > O2 && C1 < O1 && C1 < O2 && O1 > C2);
+        bool strong_bear = (C1 < O1 && body / total_len > 0.70 && lower_wick / total_len < 0.15);
+        bool break_low_2 = (C1 < L2 && C1 < O1 && body > 0.5 * total_len);
+
+        if(bear_pin || bear_eng || strong_bear || break_low_2) {
+            Print("=> [CẢNH BÁO ĐẢO CHIỀU GIẢM] Khung ", TimeframeToString(small_tf),
+                  " phát hiện nến đảo chiều! (Pinbar=", bear_pin, ", Engulfing=", bear_eng,
+                  ", StrongBear=", strong_bear, ", BreakLow=", break_low_2, ")");
+            return true;
+        }
+    } else {
+        // Đang SELL -> Tìm tín hiệu đảo chiều TĂNG
+        bool bull_pin    = (lower_wick > 0.6 * total_len && body < 0.25 * total_len && C1 >= (H1 + L1) / 2.0);
+        bool bull_eng    = (C2 < O2 && C1 > O1 && C1 > O2 && O1 < C2);
+        bool strong_bull = (C1 > O1 && body / total_len > 0.70 && upper_wick / total_len < 0.15);
+        bool break_high_2 = (C1 > H2 && C1 > O1 && body > 0.5 * total_len);
+
+        if(bull_pin || bull_eng || strong_bull || break_high_2) {
+            Print("=> [CẢNH BÁO ĐẢO CHIỀU TĂNG] Khung ", TimeframeToString(small_tf),
+                  " phát hiện nến đảo chiều! (Pinbar=", bull_pin, ", Engulfing=", bull_eng,
+                  ", StrongBull=", strong_bull, ", BreakHigh=", break_high_2, ")");
+            return true;
+        }
+    }
+
+    return false;
+}
+
+//+------------------------------------------------------------------+
+//| Kiểm tra thoát sạch sớm khi khung nhỏ đảo chiều trước khi tới TP2|
+//+------------------------------------------------------------------+
+void CheckSmallTfReversalExit(int active_scenario_idx) {
+    if(!InpEnableSmallTfExit) return;
+    if(active_scenario_idx < 0 || active_scenario_idx >= g_scenarios_count) return;
+
+    ENUM_TIMEFRAMES confirm_tf = g_scenarios[active_scenario_idx].confirm_timeframe;
+    ENUM_TIMEFRAMES small_tf   = OneStepSmallerTf(confirm_tf);
+
+    if(!IsNewBarOn(small_tf, g_last_small_tf_bar))
+        return;
+
+    bool has_positions = false;
+    bool is_buy = false;
+    double floating_profit = 0.0;
+
+    for(int i = PositionsTotal() - 1; i >= 0; i--) {
+        if(PositionGetString(POSITION_SYMBOL) == _Symbol && PositionGetInteger(POSITION_MAGIC) == InpMagicNumber) {
+            has_positions = true;
+            is_buy = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY);
+            floating_profit += PositionGetDouble(POSITION_PROFIT) + PositionGetDouble(POSITION_SWAP);
+        }
+    }
+
+    if(!has_positions) return;
+
+    // Nếu chỉ thoát khi có lãi dương
+    if(InpSmallTfExitInProfitOnly && floating_profit <= 0.0)
+        return;
+
+    if(DetectReversalSignalOnSmallTf(small_tf, is_buy)) {
+        string reason = "Khung nhỏ " + TimeframeToString(small_tf) + 
+                        " đảo chiều trước khi tới TP2 (Lãi mở: " + 
+                        DoubleToString(floating_profit, 2) + " USD)";
+        CloseAllPositions(reason);
     }
 }
 
@@ -1037,7 +1201,7 @@ bool IsNewBar(int index)
 //+------------------------------------------------------------------+
 //| Pattern nến đóng [1] trên khung tf                               |
 //+------------------------------------------------------------------+
-bool CheckPatternOn(ENUM_TIMEFRAMES tf, string &patterns[], int count)
+bool CheckPatternOn(ENUM_TIMEFRAMES tf, string &patterns[], int count, bool is_buy)
   {
    if(count <= 0)
       return false;
@@ -1057,38 +1221,54 @@ bool CheckPatternOn(ENUM_TIMEFRAMES tf, string &patterns[], int count)
    double upper_wick = H1 - MathMax(O1, C1);
    double lower_wick = MathMin(O1, C1) - L1;
 
+   bool bull_pin = (lower_wick > 0.6 * total_len && body < 0.25 * total_len && C1 >= (H1 + L1) / 2.0);
+   bool bear_pin = (upper_wick > 0.6 * total_len && body < 0.25 * total_len && C1 <= (H1 + L1) / 2.0);
+   bool bull_eng = (C2 < O2 && C1 > O1 && C1 > O2 && O1 < C2);
+   bool bear_eng = (C2 > O2 && C1 < O1 && C1 < O2 && O1 > C2);
+
    for(int p = 0; p < count; p++)
      {
       string pat = patterns[p];
+      StringToUpper(pat);
 
-      if(pat == "BULLISH_PINBAR")
+      if(pat == "PINBAR")
         {
-         if(lower_wick > 0.6 * total_len && body < 0.25 * total_len && C1 >= (H1 + L1) / 2.0)
+         if(is_buy ? bull_pin : bear_pin)
+            return true;
+        }
+      else if(pat == "BULLISH_PINBAR")
+        {
+         if(is_buy && bull_pin)
             return true;
         }
       else if(pat == "BEARISH_PINBAR")
         {
-         if(upper_wick > 0.6 * total_len && body < 0.25 * total_len && C1 <= (H1 + L1) / 2.0)
+         if(!is_buy && bear_pin)
+            return true;
+        }
+      else if(pat == "ENGULFING")
+        {
+         if(is_buy ? bull_eng : bear_eng)
             return true;
         }
       else if(pat == "BULLISH_ENGULFING")
         {
-         if(C2 < O2 && C1 > O1 && C1 > O2 && O1 < C2)
+         if(is_buy && bull_eng)
             return true;
         }
       else if(pat == "BEARISH_ENGULFING")
         {
-         if(C2 > O2 && C1 < O1 && C1 < O2 && O1 > C2)
+         if(!is_buy && bear_eng)
             return true;
         }
-      else if(pat == "STRONG_BEARISH_MARUBOZU" || pat == "STRONG_BEARISH")
+      else if(pat == "STRONG_BEARISH_MARUBOZU" || pat == "STRONG_BEARISH" || (pat == "MARUBOZU" && !is_buy))
         {
-         if(C1 < O1 && body / total_len > 0.75 && lower_wick / total_len < 0.10)
+         if(!is_buy && C1 < O1 && body / total_len > 0.75 && lower_wick / total_len < 0.10)
             return true;
         }
-      else if(pat == "STRONG_BULLISH_MARUBOZU" || pat == "STRONG_BULLISH")
+      else if(pat == "STRONG_BULLISH_MARUBOZU" || pat == "STRONG_BULLISH" || (pat == "MARUBOZU" && is_buy))
         {
-         if(C1 > O1 && body / total_len > 0.75 && upper_wick / total_len < 0.10)
+         if(is_buy && C1 > O1 && body / total_len > 0.75 && upper_wick / total_len < 0.10)
             return true;
         }
       else if(pat == "NO_LONG_LOWER_WICK")
@@ -1102,9 +1282,103 @@ bool CheckPatternOn(ENUM_TIMEFRAMES tf, string &patterns[], int count)
 
 bool CheckPattern(int index)
   {
+   bool is_buy = (g_scenarios[index].type == REVERSAL_BUY || g_scenarios[index].type == BREAKOUT_BUY);
    return CheckPatternOn(g_scenarios[index].confirm_timeframe,
                          g_scenarios[index].confirm_patterns,
-                         g_scenarios[index].patterns_count);
+                         g_scenarios[index].patterns_count,
+                         is_buy);
+  }
+
+double CurrentSpreadPrice()
+  {
+   return SymbolInfoDouble(_Symbol, SYMBOL_ASK) - SymbolInfoDouble(_Symbol, SYMBOL_BID);
+  }
+
+double MinBreakDistance()
+  {
+   double tick = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
+   if(tick <= 0.0)
+      tick = _Point;
+   double spread = CurrentSpreadPrice();
+   return MathMax(3.0 * spread, 8.0 * tick);
+  }
+
+double ZonePad(double min_z, double max_z)
+  {
+   double width = MathAbs(max_z - min_z);
+   return MathMax(width, MinBreakDistance() * 3.0);
+  }
+
+bool PriceTaggedZone(ENUM_TIMEFRAMES tf, double min_z, double max_z, double bid, double ask)
+  {
+   if((bid >= min_z && bid <= max_z) || (ask >= min_z && ask <= max_z))
+      return true;
+   double h = iHigh(_Symbol, tf, 0);
+   double l = iLow(_Symbol, tf, 0);
+   return !(h < min_z || l > max_z);
+  }
+
+// Zone mỏng (FVG): nến confirm được đóng NGOÀI zone. Chỉ cần phản ứng gần zone, không xuyên thủng.
+bool CandleReactedFromZone(ENUM_TIMEFRAMES tf, double min_z, double max_z, bool is_buy)
+  {
+   double h = iHigh(_Symbol, tf, 1);
+   double l = iLow(_Symbol, tf, 1);
+   double c = iClose(_Symbol, tf, 1);
+   double pad = ZonePad(min_z, max_z);
+
+   if(h < min_z - pad || l > max_z + pad)
+      return false;
+   if(is_buy && c < min_z - pad)
+      return false;
+   if(!is_buy && c > max_z + pad)
+      return false;
+   return true;
+  }
+
+bool PriceTouchedMid(ENUM_TIMEFRAMES tf, double min_z, double max_z, double bid, double ask, bool is_buy)
+  {
+   double mid = (min_z + max_z) / 2.0;
+   if(is_buy)
+     {
+      if(bid <= mid && bid >= min_z)
+         return true;
+      if(ask <= mid && ask >= min_z)
+         return true;
+     }
+   else
+     {
+      if(ask >= mid && ask <= max_z)
+         return true;
+      if(bid >= mid && bid <= max_z)
+         return true;
+     }
+
+   double h = iHigh(_Symbol, tf, 0);
+   double l = iLow(_Symbol, tf, 0);
+   if(l > mid || h < mid)
+      return false;
+   return is_buy ? (l >= min_z) : (h <= max_z);
+  }
+
+bool ClosedCandleTouched(ENUM_TIMEFRAMES tf, double trigger, bool is_sell)
+  {
+   double h = iHigh(_Symbol, tf, 1);
+   double l = iLow(_Symbol, tf, 1);
+   return is_sell ? (h >= trigger) : (l <= trigger);
+  }
+
+bool DirectionalClose(ENUM_TIMEFRAMES tf, bool is_buy)
+  {
+   double o = iOpen(_Symbol, tf, 1);
+   double c = iClose(_Symbol, tf, 1);
+   return is_buy ? (c > o) : (c < o);
+  }
+
+bool ConfirmPatternOrDirection(ENUM_TIMEFRAMES tf, string &patterns[], int count, bool is_buy)
+  {
+   if(count > 0)
+      return CheckPatternOn(tf, patterns, count, is_buy);
+   return DirectionalClose(tf, is_buy);
   }
 
 //+------------------------------------------------------------------+
@@ -1173,65 +1447,121 @@ double CalcMaxLotsForRisk(ENUM_ORDER_TYPE order_type, double entry, double sl, d
   }
 
 //+------------------------------------------------------------------+
-//| Chia volume: TP1 làm tròn 50%, TP2 làm tròn 50% phần còn,        |
-//| TP3 nhận HẾT phần lẻ còn lại (không làm tròn xuống nữa).         |
+//| Tổng lỗ USD nếu các lệnh đang mở cùng magic cắn SL               |
 //+------------------------------------------------------------------+
-void SplitTpVolumes(double total_lots, int tp_count, double &vols[])
+double SumOpenPositionsSlRisk(double sl)
   {
-   ArrayResize(vols, MathMax(tp_count, 1));
-   ArrayInitialize(vols, 0.0);
+   double total = 0.0;
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+     {
+      if(PositionGetSymbol(i) != _Symbol)
+         continue;
+      if(PositionGetInteger(POSITION_MAGIC) != InpMagicNumber)
+         continue;
+      double vol  = PositionGetDouble(POSITION_VOLUME);
+      double open = PositionGetDouble(POSITION_PRICE_OPEN);
+      double pos_sl = PositionGetDouble(POSITION_SL);
+      double sl_use = (pos_sl > 0.0) ? pos_sl : sl;
+      long ptype = PositionGetInteger(POSITION_TYPE);
+      ENUM_ORDER_TYPE ot = (ptype == POSITION_TYPE_BUY) ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
+      double profit = 0.0;
+      if(!OrderCalcProfit(ot, _Symbol, vol, open, sl_use, profit))
+         continue;
+      total += MathAbs(profit);
+     }
+   return total;
+  }
+
+//+------------------------------------------------------------------+
+//| Chia volume theo mô hình 2 TP tối ưu:                           |
+//| - Có TP2: 35% tại 50% TP1, 35% tại TP1, 30% tại TP2              |
+//| - Chỉ TP1: 50% tại 50% TP1, 50% tại TP1                          |
+//+------------------------------------------------------------------+
+void Split2TpVolumes(double total_lots, bool has_tp2, double &vols[], double &targets[], 
+                     string &comments[], string scenario_id, string wave,
+                     double entry, double tp1, double tp2, bool is_buy)
+  {
    double vmin = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
-
-   if(tp_count <= 1)
+   double tp_half = 0.0;
+   if(tp1 > 0.0)
      {
-      vols[0] = total_lots;
-      return;
+      if(is_buy)
+         tp_half = NormalizeDouble(entry + (tp1 - entry) * 0.5, _Digits);
+      else
+         tp_half = NormalizeDouble(entry - (entry - tp1) * 0.5, _Digits);
      }
 
-   vols[0] = NormalizeVolumeFloor(total_lots * 0.50);
-   if(vols[0] < vmin)
+   if(has_tp2 && tp2 > 0.0)
      {
-      vols[0] = total_lots;
-      return;
-     }
+      ArrayResize(vols, 3);
+      ArrayResize(targets, 3);
+      ArrayResize(comments, 3);
+      ArrayInitialize(vols, 0.0);
 
-   if(tp_count == 2)
+      targets[0] = tp_half;
+      targets[1] = tp1;
+      targets[2] = tp2;
+
+      comments[0] = "AI_" + scenario_id + "_TP1_HALF_" + wave;
+      comments[1] = "AI_" + scenario_id + "_TP1_" + wave;
+      comments[2] = "AI_" + scenario_id + "_TP2_" + wave;
+
+      // 35% - 35% - 30%
+      vols[0] = NormalizeVolumeFloor(total_lots * 0.35);
+      vols[1] = NormalizeVolumeFloor(total_lots * 0.35);
+      vols[2] = NormalizeDouble(total_lots - vols[0] - vols[1], 8);
+
+      if(total_lots < 2.0 * vmin)
+        {
+         vols[0] = total_lots;
+         vols[1] = 0.0;
+         vols[2] = 0.0;
+         targets[0] = tp1;
+         comments[0] = "AI_" + scenario_id + "_TP1_" + wave;
+        }
+      else if(total_lots < 3.0 * vmin || vols[0] < vmin || vols[1] < vmin || vols[2] < vmin)
+        {
+         // Chỉ đủ 2 lệnh: 1 lệnh 50% TP1, 1 lệnh TP2
+         vols[0] = NormalizeVolumeFloor(total_lots * 0.50);
+         if(vols[0] < vmin) vols[0] = vmin;
+         vols[1] = NormalizeDouble(total_lots - vols[0], 8);
+         vols[2] = 0.0;
+         targets[0] = tp_half;
+         targets[1] = tp2;
+         comments[0] = "AI_" + scenario_id + "_TP1_HALF_" + wave;
+         comments[1] = "AI_" + scenario_id + "_TP2_" + wave;
+        }
+     }
+   else
      {
+      ArrayResize(vols, 2);
+      ArrayResize(targets, 2);
+      ArrayResize(comments, 2);
+      ArrayInitialize(vols, 0.0);
+
+      targets[0] = tp_half;
+      targets[1] = tp1;
+
+      comments[0] = "AI_" + scenario_id + "_TP1_HALF_" + wave;
+      comments[1] = "AI_" + scenario_id + "_TP1_" + wave;
+
+      vols[0] = NormalizeVolumeFloor(total_lots * 0.50);
       vols[1] = NormalizeDouble(total_lots - vols[0], 8);
-      if(vols[1] < vmin)
+
+      if(total_lots < 2.0 * vmin || vols[0] < vmin || vols[1] < vmin)
         {
          vols[0] = total_lots;
          vols[1] = 0.0;
+         targets[0] = tp1;
+         comments[0] = "AI_" + scenario_id + "_TP1_" + wave;
         }
-      return;
-     }
-
-   double after_tp1 = NormalizeDouble(total_lots - vols[0], 8);
-   vols[1] = NormalizeVolumeFloor(after_tp1 * 0.50);
-   if(vols[1] < vmin)
-     {
-      vols[1] = after_tp1;
-      vols[2] = 0.0;
-      if(vols[1] < vmin)
-        {
-         vols[0] = total_lots;
-         vols[1] = 0.0;
-        }
-      return;
-     }
-
-   vols[2] = NormalizeDouble(total_lots - vols[0] - vols[1], 8);
-   if(vols[2] > 0.0 && vols[2] < vmin)
-     {
-      vols[1] = NormalizeDouble(vols[1] + vols[2], 8);
-      vols[2] = 0.0;
      }
   }
 
 //+------------------------------------------------------------------+
-//| Thực thi lệnh: lot theo rủi ro USD, chốt 50% / 25% / 25%         |
+//| wave: "FULL" = 100% | "MID" = 50% | "REST" = phần lot còn lại    |
 //+------------------------------------------------------------------+
-void ExecuteTrade(int index)
+void ExecuteTradeWave(int index, string wave)
   {
    ENUM_SCENARIO_TYPE type = g_scenarios[index].type;
    double sl = g_scenarios[index].sl;
@@ -1254,44 +1584,73 @@ void ExecuteTrade(int index)
    double max_risk = g_scenarios[index].max_risk_usd;
    if(max_risk <= 0.0 || max_risk > InpMaxRiskMoney)
       max_risk = InpMaxRiskMoney;
-   double total_lots = CalcMaxLotsForRisk(order_type, entry, sl, max_risk);
    double vmin = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
-   if(total_lots < vmin)
+
+   double wave_risk = max_risk;
+   if(wave == "MID")
+      wave_risk = max_risk * 0.5;
+   else if(wave == "REST")
      {
-      Print("CẢNH BÁO: Không vào lệnh [", g_scenarios[index].id,
-            "] vì lot tối thiểu đã vượt rủi ro ", DoubleToString(max_risk, 2),
+      double used_risk = SumOpenPositionsSlRisk(sl);
+      wave_risk = max_risk - used_risk;
+      if(wave_risk > max_risk * 0.5)
+         wave_risk = max_risk * 0.5;
+      if(wave_risk < 0.01)
+        {
+         Print("Reversal [", g_scenarios[index].id, "] hết ngân sách rủi ro (đã dùng ",
+               DoubleToString(used_risk, 2), "/", DoubleToString(max_risk, 2),
+               " USD). Không vào nửa confirm.");
+         g_scenarios[index].reversal_confirm_filled = true;
+         g_scenarios[index].status = COMPLETED;
+         return;
+        }
+     }
+
+   double lots = CalcMaxLotsForRisk(order_type, entry, sl, wave_risk);
+   if(lots < vmin)
+     {
+      Print("CẢNH BÁO: Không vào lệnh [", g_scenarios[index].id, "] wave ", wave,
+            " vì lot tối thiểu đã vượt rủi ro còn lại ", DoubleToString(wave_risk, 2),
             " USD (SL=", DoubleToString(sl, _Digits), " Entry=", DoubleToString(entry, _Digits), ").");
+      if(wave == "REST")
+        {
+         g_scenarios[index].reversal_confirm_filled = true;
+         g_scenarios[index].status = COMPLETED;
+        }
       return;
      }
 
-   int tps_count = g_scenarios[index].tps_count;
-   if(tps_count <= 0)
-      tps_count = 1;
-   if(tps_count > 3)
-      tps_count = 3;
+   double tp1 = (g_scenarios[index].tps_count > 0) ? g_scenarios[index].tps[0] : 0.0;
+   double tp2 = (g_scenarios[index].tps_count > 1) ? g_scenarios[index].tps[1] : 0.0;
+   bool has_tp2 = (g_scenarios[index].tps_count > 1 && tp2 > 0.0);
 
    double vols[];
-   SplitTpVolumes(total_lots, tps_count, vols);
+   double targets[];
+   string comments[];
+   Split2TpVolumes(lots, has_tp2, vols, targets, comments, g_scenarios[index].id, wave, entry, tp1, tp2, is_buy);
 
    double est_risk = 0.0;
-   OrderCalcProfit(order_type, _Symbol, total_lots, entry, sl, est_risk);
-   Print("=> [RISK] ", _Symbol,
+   if(!OrderCalcProfit(order_type, _Symbol, lots, entry, sl, est_risk))
+      est_risk = 0.0;
+
+   Print("=> [RISK] ", _Symbol, " wave=", wave,
          " tick=", DoubleToString(SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE), 4),
-         " USD | Max=", DoubleToString(max_risk, 2),
-         " USD (EA cap ", DoubleToString(InpMaxRiskMoney, 2),
-         ") | Ước lượng lỗ nếu SL=", DoubleToString(MathAbs(est_risk), 2),
-         " USD | Tổng lot=", DoubleToString(total_lots, 2),
-         " | TP1 50%=", DoubleToString(vols[0], 2),
-         (ArraySize(vols) >= 2 && vols[1] > 0 ? " | TP2=" + DoubleToString(vols[1], 2) : ""),
-         (ArraySize(vols) >= 3 && vols[2] > 0 ? " | TP3 phần lẻ=" + DoubleToString(vols[2], 2) : ""));
+         " USD | Trần=", DoubleToString(max_risk, 2),
+         " | Ngân sách wave=", DoubleToString(wave_risk, 2),
+         " USD | Lỗ ước lượng wave này=", DoubleToString(MathAbs(est_risk), 2),
+         " USD | Lot=", DoubleToString(lots, 2),
+         " | Entry=", DoubleToString(entry, _Digits),
+         " | SL=", DoubleToString(sl, _Digits));
 
    int success_orders = 0;
-   for(int t = 0; t < tps_count; t++)
+   double filled_now = 0.0;
+   int num_orders = ArraySize(vols);
+   for(int t = 0; t < num_orders; t++)
      {
       if(vols[t] < vmin)
          continue;
-      double tp = (t < g_scenarios[index].tps_count) ? g_scenarios[index].tps[t] : 0;
-      string comment = "AI_" + g_scenarios[index].id + "_TP" + IntegerToString(t + 1);
+      double tp = targets[t];
+      string comment = comments[t];
 
       bool res = false;
       if(is_buy)
@@ -1299,23 +1658,50 @@ void ExecuteTrade(int index)
       else
          res = trade.Sell(vols[t], _Symbol, 0, sl, tp, comment);
       if(res)
+        {
          success_orders++;
+         filled_now += vols[t];
+        }
       else
-         Print("Lỗi gửi lệnh TP", t + 1, " lot=", vols[t], " | ", GetLastError());
+         Print("Lỗi gửi lệnh ", comment, " lot=", vols[t], " | ", GetLastError());
      }
 
    if(success_orders > 0)
      {
-      g_scenarios[index].status = COMPLETED;
+      g_scenarios[index].filled_lots = NormalizeDouble(g_scenarios[index].filled_lots + filled_now, 8);
       g_is_trading = true;
-      g_trade_start_time = TimeCurrent();
-      Print("Đã thực thi [", g_scenarios[index].id, "] với ", success_orders,
-            " lệnh (TP1 50% đã làm tròn, TP2 50% phần còn đã làm tròn, TP3 nhận hết phần lẻ). Theo dõi lệnh...");
+      if(g_trade_start_time == 0)
+         g_trade_start_time = TimeCurrent();
+      g_active_scenario_index = index;
+
+      if(wave == "MID")
+        {
+         g_scenarios[index].reversal_mid_filled = true;
+         g_scenarios[index].status = ACTIVE;
+         Print("Đã vào NỬA ĐẦU [", g_scenarios[index].id, "] tại giữa zone. SL đầy đủ ",
+               DoubleToString(sl, _Digits), " | lot=", DoubleToString(filled_now, 2),
+               " | rủi ro wave ≈ ", DoubleToString(MathAbs(est_risk), 2),
+               " USD. Nửa confirm sẽ tính lot theo rủi ro còn lại tại giá mới, không copy lot.");
+        }
+      else
+        {
+         g_scenarios[index].reversal_confirm_filled = true;
+         g_scenarios[index].status = COMPLETED;
+         Print("Đã thực thi [", g_scenarios[index].id, "] wave ", wave, " với ", success_orders,
+               " lệnh. Lot cộng dồn=", DoubleToString(g_scenarios[index].filled_lots, 2),
+               ". Theo dõi lệnh...");
+        }
      }
    else
      {
-      Print("CẢNH BÁO: Không thể gửi lệnh cho kịch bản [", g_scenarios[index].id, "]. Mã lỗi: ", GetLastError());
+      Print("CẢNH BÁO: Không thể gửi lệnh cho kịch bản [", g_scenarios[index].id, "] wave ",
+            wave, ". Mã lỗi: ", GetLastError());
      }
+  }
+
+void ExecuteTrade(int index)
+  {
+   ExecuteTradeWave(index, "FULL");
   }
 
 //+------------------------------------------------------------------+
@@ -1324,21 +1710,57 @@ void ExecuteTrade(int index)
 void ProcessReversalScenario(int index, double bid, double ask) {
     double min_z = g_scenarios[index].entry_min;
     double max_z = g_scenarios[index].entry_max;
-    
-    if(!g_scenarios[index].ready_to_confirm) {
-        if((bid >= min_z && bid <= max_z) || (ask >= min_z && ask <= max_z)) {
-            g_scenarios[index].ready_to_confirm = true;
-            Print("Kịch bản [", g_scenarios[index].id, "] giá đã vào vùng Entry. Ready to Confirm.");
-        }
+    bool is_buy = (g_scenarios[index].type == REVERSAL_BUY);
+    ENUM_TIMEFRAMES tf = g_scenarios[index].confirm_timeframe;
+    double mid = (min_z + max_z) / 2.0;
+
+    if(!g_scenarios[index].reversal_mid_filled)
+      {
+       if(!PriceTouchedMid(tf, min_z, max_z, bid, ask, is_buy))
+          return;
+
+       g_scenarios[index].ready_to_confirm = true;
+       g_scenarios[index].confirm_wait_bars = 0;
+       g_scenarios[index].last_bar_time = iTime(_Symbol, tf, 0);
+       Print("Kịch bản [", g_scenarios[index].id, "] chạm giữa zone ",
+             DoubleToString(mid, _Digits), " (", DoubleToString(min_z, _Digits), "-",
+             DoubleToString(max_z, _Digits), "). Vào 50% lot, SL đầy đủ.");
+       ExecuteTradeWave(index, "MID");
+       return;
+      }
+
+    if(g_scenarios[index].reversal_confirm_filled)
+       return;
+
+    if(!IsNewBar(index))
         return;
-    }
-    
-    if(IsNewBar(index)) {
-        if(CheckPattern(index)) {
-            Print("Kịch bản [", g_scenarios[index].id, "] Đã xác nhận Pattern! Thực thi lệnh.");
-            ExecuteTrade(index);
-        }
-    }
+
+    g_scenarios[index].confirm_wait_bars++;
+    if(InpMaxConfirmBars > 0 && g_scenarios[index].confirm_wait_bars > InpMaxConfirmBars)
+      {
+       g_scenarios[index].reversal_confirm_filled = true;
+       g_scenarios[index].status = COMPLETED;
+       Print("Kịch bản [", g_scenarios[index].id, "] hết chờ confirm (", InpMaxConfirmBars,
+             " nến ", TimeframeToString(tf), "). Giữ nửa lot đã vào, không vào nửa còn lại.");
+       return;
+      }
+
+    if(!CandleReactedFromZone(tf, min_z, max_z, is_buy))
+      {
+       Print("Reversal [", g_scenarios[index].id, "] nến confirm không còn phản ứng gần zone (pad=",
+             DoubleToString(ZonePad(min_z, max_z), _Digits), "). Chờ nến tiếp.");
+       return;
+      }
+
+    if(!ConfirmPatternOrDirection(tf, g_scenarios[index].confirm_patterns,
+                                  g_scenarios[index].patterns_count, is_buy))
+      {
+       Print("Reversal [", g_scenarios[index].id, "] gần zone nhưng chưa khớp pattern/nến thuận. Chờ nến tiếp.");
+       return;
+      }
+
+    Print("Kịch bản [", g_scenarios[index].id, "] Confirm OK. Vào nửa lot còn lại, SL đầy đủ.");
+    ExecuteTradeWave(index, "REST");
 }
 
 //+------------------------------------------------------------------+
@@ -1348,89 +1770,95 @@ void ProcessBreakoutScenario(int index, double bid, double ask)
   {
    double trigger = g_scenarios[index].trigger_price;
    bool is_sell = (g_scenarios[index].type == BREAKOUT_SELL);
+   bool is_buy  = !is_sell;
    ENUM_TIMEFRAMES confirm_tf = g_scenarios[index].confirm_timeframe;
    ENUM_TIMEFRAMES retest_tf  = g_scenarios[index].retest_timeframe;
    if(retest_tf == PERIOD_CURRENT)
       retest_tf = OneStepSmallerTf(confirm_tf);
+   double min_break = MinBreakDistance();
 
-   // 1) Nến confirm đóng phá trigger (không đuổi)
+   // 1) Nến confirm ĐÓNG phá dứt khoát (không đuổi, không phá bằng râu)
    if(!g_scenarios[index].breakout_confirmed)
      {
       if(IsNewBarOn(confirm_tf, g_scenarios[index].last_bar_time))
         {
          double close1 = iClose(_Symbol, confirm_tf, 1);
-         bool broke = is_sell ? (close1 < trigger) : (close1 > trigger);
+         bool broke = is_sell ? (close1 < trigger - min_break)
+                              : (close1 > trigger + min_break);
          if(!broke)
             return;
 
-         bool pat_ok = true;
-         if(g_scenarios[index].patterns_count > 0)
-            pat_ok = CheckPatternOn(confirm_tf, g_scenarios[index].confirm_patterns, g_scenarios[index].patterns_count);
-         if(!pat_ok)
+         if(!DirectionalClose(confirm_tf, is_buy))
            {
-            Print("Breakout [", g_scenarios[index].id, "] đóng phá trigger nhưng chưa khớp pattern confirm. Chờ nến ", TimeframeToString(confirm_tf), " tiếp.");
+            Print("Breakout [", g_scenarios[index].id, "] đóng qua trigger nhưng nến không thuận chiều. Chờ nến ",
+                  TimeframeToString(confirm_tf), " tiếp.");
+            return;
+           }
+
+         if(g_scenarios[index].patterns_count > 0
+            && !CheckPatternOn(confirm_tf, g_scenarios[index].confirm_patterns, g_scenarios[index].patterns_count, is_buy))
+           {
+            Print("Breakout [", g_scenarios[index].id, "] đóng phá trigger nhưng chưa khớp pattern confirm. Chờ nến ",
+                  TimeframeToString(confirm_tf), " tiếp.");
             return;
            }
 
          g_scenarios[index].breakout_confirmed = true;
          g_scenarios[index].retest_touched = false;
+         g_scenarios[index].retest_wait_bars = 0;
          g_scenarios[index].last_retest_bar_time = iTime(_Symbol, retest_tf, 0);
          Print("Breakout [", g_scenarios[index].id, "] CONFIRMED: ", TimeframeToString(confirm_tf),
                " đóng ", DoubleToString(close1, _Digits), " qua trigger ", DoubleToString(trigger, _Digits),
-               ". Không đuổi. Chờ retest ", TimeframeToString(retest_tf), " hồi về trigger rồi nến tiếp diễn.");
+               " (min break ", DoubleToString(min_break, _Digits), "). Không đuổi. Chờ nến ",
+               TimeframeToString(retest_tf), " đóng retest+tiếp diễn.");
         }
       return;
      }
 
-   // 2) Giá hồi chạm lại trigger trên khung retest
-   if(!g_scenarios[index].retest_touched)
+   // 2) Nến retest ĐÓNG: chạm trigger + vẫn đúng phía phá + pattern/nến thuận → vào lệnh
+   if(!IsNewBarOn(retest_tf, g_scenarios[index].last_retest_bar_time))
+      return;
+
+   g_scenarios[index].retest_wait_bars++;
+   if(InpMaxRetestBars > 0 && g_scenarios[index].retest_wait_bars > InpMaxRetestBars)
      {
-      double high0 = iHigh(_Symbol, retest_tf, 0);
-      double low0  = iLow(_Symbol, retest_tf, 0);
-      bool touched = is_sell ? (high0 >= trigger || ask >= trigger)
-                             : (low0 <= trigger || bid <= trigger);
-      if(touched)
-        {
-         g_scenarios[index].retest_touched = true;
-         Print("Breakout [", g_scenarios[index].id, "] RETEST TOUCH trigger ", DoubleToString(trigger, _Digits),
-               " trên ", TimeframeToString(retest_tf), ". Chờ nến đóng xác nhận tiếp diễn.");
-        }
+      g_scenarios[index].status = EXPIRED;
+      Print("Breakout [", g_scenarios[index].id, "] EXPIRED: quá ", InpMaxRetestBars,
+            " nến ", TimeframeToString(retest_tf), " sau phá mà chưa retest hợp lệ.");
       return;
      }
 
-   // 3) Nến retest đóng: còn đúng phía phá vỡ + pattern tiếp diễn → vào lệnh
-   if(IsNewBarOn(retest_tf, g_scenarios[index].last_retest_bar_time))
+   double close1 = iClose(_Symbol, retest_tf, 1);
+   bool still_broken = is_sell ? (close1 < trigger) : (close1 > trigger);
+   if(!still_broken)
      {
-      double close1 = iClose(_Symbol, retest_tf, 1);
-      double open1  = iOpen(_Symbol, retest_tf, 1);
-      bool still_broken = is_sell ? (close1 < trigger) : (close1 > trigger);
-      if(!still_broken)
-        {
-         Print("Breakout [", g_scenarios[index].id, "] retest FAIL: nến ", TimeframeToString(retest_tf),
-               " đóng ngược lại trigger. Reset, chờ phá lại.");
-         g_scenarios[index].breakout_confirmed = false;
-         g_scenarios[index].retest_touched = false;
-         return;
-        }
-
-      bool pat_ok = true;
-      if(g_scenarios[index].retest_patterns_count > 0)
-         pat_ok = CheckPatternOn(retest_tf, g_scenarios[index].retest_patterns, g_scenarios[index].retest_patterns_count);
-      else
-         pat_ok = is_sell ? (close1 < open1) : (close1 > open1);
-
-      if(pat_ok)
-        {
-         Print("Breakout [", g_scenarios[index].id, "] RETEST CONTINUE trên ", TimeframeToString(retest_tf),
-               ". Vào lệnh.");
-         ExecuteTrade(index);
-        }
-      else
-        {
-         Print("Breakout [", g_scenarios[index].id, "] đã retest nhưng chưa có nến tiếp diễn. Chờ nến ",
-               TimeframeToString(retest_tf), " tiếp.");
-        }
+      Print("Breakout [", g_scenarios[index].id, "] retest FAIL: nến ", TimeframeToString(retest_tf),
+            " đóng ngược lại trigger. Reset, chờ phá lại.");
+      g_scenarios[index].breakout_confirmed = false;
+      g_scenarios[index].retest_touched = false;
+      g_scenarios[index].retest_wait_bars = 0;
+      return;
      }
+
+   if(!ClosedCandleTouched(retest_tf, trigger, is_sell))
+     {
+      Print("Breakout [", g_scenarios[index].id, "] nến ", TimeframeToString(retest_tf),
+            " chưa chạm lại trigger. Chờ hồi.");
+      return;
+     }
+
+   g_scenarios[index].retest_touched = true;
+   if(!ConfirmPatternOrDirection(retest_tf, g_scenarios[index].retest_patterns,
+                                 g_scenarios[index].retest_patterns_count, is_buy))
+     {
+      Print("Breakout [", g_scenarios[index].id, "] đã chạm trigger nhưng chưa có nến tiếp diễn. Chờ nến ",
+            TimeframeToString(retest_tf), " tiếp.");
+      return;
+     }
+
+   Print("Breakout [", g_scenarios[index].id, "] RETEST CONTINUE trên ", TimeframeToString(retest_tf),
+         " (nến đóng chạm trigger + thuận chiều). Vào lệnh.");
+   ExecuteTrade(index);
   }
 
 //+------------------------------------------------------------------+
@@ -1442,24 +1870,55 @@ void MonitorScenarios() {
     double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
     double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
     
-    // NẾU ĐANG CÓ LỆNH -> Theo dõi lệnh & dời SL về hòa vốn
+    // NẾU ĐANG CÓ LỆNH -> Theo dõi lệnh & dời SL về hòa vốn / thoát đảo chiều
     if(g_is_trading) {
         if(HasOpenPositions()) {
             CheckAndMoveBreakeven(g_trade_start_time);
-            return;
+            CheckSmallTfReversalExit(g_active_scenario_index);
+            
+            if(!HasOpenPositions()) {
+                // Đã đóng sạch lệnh (ví dụ do phát hiện đảo chiều khung nhỏ) -> rơi xuống xử lý PnL bên dưới
+            } else {
+                int ai = g_active_scenario_index;
+                if(ai >= 0 && ai < g_scenarios_count
+                   && (g_scenarios[ai].type == REVERSAL_BUY || g_scenarios[ai].type == REVERSAL_SELL)
+                   && g_scenarios[ai].reversal_mid_filled
+                   && !g_scenarios[ai].reversal_confirm_filled)
+                  {
+                   ProcessReversalScenario(ai, bid, ask);
+                  }
+                return;
+            }
         }
         
         // Lệnh đã đóng hết -> Kiểm tra kết quả Lời/Lỗ
         double net_profit = CheckScenarioProfit(g_trade_start_time);
+        int ai = g_active_scenario_index;
+        string sid = (ai >= 0 && ai < g_scenarios_count) ? g_scenarios[ai].id : "?";
         if(net_profit > 0) {
-            Print("Kịch bản [", g_scenarios[g_active_scenario_index].id, "] đã chốt lời (WIN) với profit: ", net_profit, ". Hoàn thành mục tiêu chu kỳ này.");
+            if(ai >= 0 && ai < g_scenarios_count)
+              {
+               g_scenarios[ai].status = COMPLETED;
+               g_scenarios[ai].reversal_confirm_filled = true;
+              }
+            Print("Kịch bản [", sid, "] đã chốt lời (WIN) với profit: ", net_profit, ". Hoàn thành mục tiêu chu kỳ này.");
             g_ea_stopped = true;
             g_is_trading = false;
             g_active_scenario_index = -1;
+            g_trade_start_time = 0;
+            g_last_small_tf_bar = 0;
         } else {
-            Print("Kịch bản [", g_scenarios[g_active_scenario_index].id, "] đã bị lỗ (LOSS) với profit: ", net_profit, ". Quay lại giám sát các kịch bản còn lại.");
+            if(ai >= 0 && ai < g_scenarios_count)
+              {
+               g_scenarios[ai].status = EXPIRED;
+               g_scenarios[ai].reversal_confirm_filled = true;
+              }
+            Print("Kịch bản [", sid, "] bị SL/lỗ (LOSS) profit: ", net_profit,
+                  ". Không vào nửa lot confirm. Quay lại giám sát kịch bản còn lại.");
             g_is_trading = false;
             g_active_scenario_index = -1;
+            g_trade_start_time = 0;
+            g_last_small_tf_bar = 0;
         }
         return;
     }
