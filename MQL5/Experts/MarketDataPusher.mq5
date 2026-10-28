@@ -15,12 +15,18 @@ input bool   InpUseAiStructure = true;             // Sử dụng AI Structure (
 input bool   InpCallInitialize = false;            // true = gọi /initialize lúc OnInit. false = bỏ qua init
 input bool   InpCallUpdate     = true;             // true = gửi dữ liệu /update sau mỗi nến Trigger. false = tắt gửi /update
 
+//--- Quản Lý Rủi Ro & Mục Tiêu Ngày (Daily Target & Loss Protection) ---
+input double InpDailyTargetProfit       = 100.0;            // Mục tiêu chốt lời ngày (USD, 0 = tắt). Đạt mức này sẽ chốt hết lệnh và nghỉ ngơi chờ hôm sau reset.
+input double InpMaxDailyLoss            = 200.0;            // Ngưỡng cắt lỗ tối đa 1 ngày (USD, 0 = tắt). Lỗ chạm mức này sẽ đóng hết lệnh và nghỉ ngơi chờ hôm sau reset.
+input int    InpLossCooldownMinutes     = 30;               // Thời gian nghỉ sau khi bị SL/thua lỗ (phút, 0 = tắt). Tránh tâm lý nhồi lệnh liên tục.
+input int    InpMinPlanIntervalMinutes  = 15;               // Giãn cách tối thiểu giữa 2 lần xin kịch bản mới (phút). Tránh gọi AI dồn dập.
+
 //--- Cài đặt Giao Dịch & Quản Lý Kịch Bản AI ---
 input double InpMaxRiskMoney     = 100.0;            // Số tiền chịu rủi ro tối đa 1 lần vào lệnh (USD). Lot tính từ SL, không được vượt mức này.
 input ulong  InpMagicNumber      = 123456;           // Magic Number
 input int    InpSlippage         = 10;               // Slippage
 input int    InpBreakevenOffset  = 20;               // Bù trừ hòa vốn (Points) để bù phí khi dời SL sau TP1
-input int    InpCheckScenarioSec = 60;               // Thời gian gọi API kiểm tra kịch bản mới (giây) - Mặc định 60s
+input int    InpCheckScenarioSec = 180;              // Thời gian gọi API kiểm tra kịch bản mới (giây) - Mặc định 180s (3 phút)
 input int    InpMaxConfirmBars   = 8;                // Tối đa nến confirm sau khi giá vào zone (REVERSAL). 0 = không giới hạn
 input int    InpMaxRetestBars    = 12;               // Tối đa nến retest sau khi phá (BREAKOUT). 0 = không giới hạn
 
@@ -128,6 +134,17 @@ datetime g_last_small_tf_bar = 0;        // Nến khung nhỏ đã kiểm tra t�
 int      g_active_scenario_index = -1;   // Kịch bản nào đang khớp lệnh
 bool     g_ea_stopped = false;           // Đã hoàn thành (Win)
 datetime g_last_scenario_check = 0;      // Thời điểm kiểm tra API kịch bản gần nhất
+datetime g_last_loss_time = 0;           // Thời điểm dính SL/thua lỗ gần nhất (dùng cho Loss Cooldown)
+datetime g_last_plan_request_time = 0;   // Thời điểm gửi yêu cầu xin kịch bản mới gần nhất (dùng cho Throttling)
+datetime g_current_trading_day = 0;      // Thời điểm bắt đầu ngày giao dịch hiện tại (PERIOD_D1)
+bool     g_daily_target_reached = false; // Đã đạt mục tiêu chốt lời ngày hôm nay
+bool     g_daily_loss_reached = false;   // Đã chạm ngưỡng cắt lỗ tối đa ngày hôm nay
+
+// Kiểm tra xem EA đã bị dừng giao dịch trong ngày chưa (do đạt lãi hoặc chạm lỗ tối đa)
+bool IsDayStopped()
+  {
+   return (g_daily_target_reached || g_daily_loss_reached);
+  }
 
 //+------------------------------------------------------------------+
 //| Chuyển chuỗi TF thành ENUM_TIMEFRAMES                            |
@@ -171,9 +188,217 @@ bool HasOpenPositions() {
 }
 
 //+------------------------------------------------------------------+
+//| Kiểm tra xem có đang trong thời gian nghỉ sau lệnh thua không    |
+//+------------------------------------------------------------------+
+bool IsInLossCooldown()
+  {
+   if(InpLossCooldownMinutes <= 0 || g_last_loss_time == 0) return false;
+   if(TimeCurrent() - g_last_loss_time < InpLossCooldownMinutes * 60)
+      return true;
+   return false;
+  }
+
+//+------------------------------------------------------------------+
+//| Tính tổng lợi nhuận ròng hôm nay (Closed Deals + Floating PnL)   |
+//+------------------------------------------------------------------+
+double CalculateTodayNetProfit()
+  {
+   datetime day_start = iTime(_Symbol, PERIOD_D1, 0);
+   if(day_start == 0)
+     {
+      MqlDateTime dt;
+      TimeCurrent(dt);
+      dt.hour = 0; dt.min = 0; dt.sec = 0;
+      day_start = StructToTime(dt);
+     }
+
+   double total = 0.0;
+
+   // 1. Lợi nhuận từ lịch sử deal trong ngày hôm nay (tính cả commission & swap)
+   if(HistorySelect(day_start, TimeCurrent() + 60))
+     {
+      int deals = HistoryDealsTotal();
+      for(int i = 0; i < deals; i++)
+        {
+         ulong ticket = HistoryDealGetTicket(i);
+         if(ticket == 0) continue;
+         if(HistoryDealGetString(ticket, DEAL_SYMBOL) == _Symbol && 
+            HistoryDealGetInteger(ticket, DEAL_MAGIC) == InpMagicNumber)
+           {
+            total += HistoryDealGetDouble(ticket, DEAL_PROFIT)
+                   + HistoryDealGetDouble(ticket, DEAL_COMMISSION)
+                   + HistoryDealGetDouble(ticket, DEAL_SWAP);
+           }
+        }
+     }
+
+   // 2. Lợi nhuận thả nổi của các lệnh đang mở (nếu có)
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+     {
+      if(PositionGetSymbol(i) == _Symbol && 
+         PositionGetInteger(POSITION_MAGIC) == InpMagicNumber)
+        {
+         total += PositionGetDouble(POSITION_PROFIT) + PositionGetDouble(POSITION_SWAP);
+        }
+     }
+
+   return total;
+  }
+
+//+------------------------------------------------------------------+
+//| Reset mục tiêu ngày khi bước sang ngày giao dịch mới             |
+//+------------------------------------------------------------------+
+void CheckAndResetDailyTarget()
+  {
+   datetime today_start = iTime(_Symbol, PERIOD_D1, 0);
+   if(today_start == 0) return;
+   
+   if(g_current_trading_day == 0)
+     {
+      g_current_trading_day = today_start;
+     }
+   else if(today_start != g_current_trading_day)
+     {
+      Print("==================================================================");
+      Print("=> [NEW DAY RESET] Bước sang ngày giao dịch mới (", TimeToString(today_start, TIME_DATE), "). Đã reset mục tiêu ngày!");
+      Print("==================================================================");
+      g_current_trading_day = today_start;
+      g_daily_target_reached = false;
+      g_daily_loss_reached = false;
+      g_ea_stopped = false;
+      g_last_loss_time = 0;
+     }
+  }
+
+//+------------------------------------------------------------------+
+//| Kiểm tra ngưỡng chốt lời / cắt lỗ tối đa ngày                    |
+//+------------------------------------------------------------------+
+void CheckDailyTargetProfit()
+  {
+   if(IsDayStopped()) return;
+
+   double today_profit = CalculateTodayNetProfit();
+
+   // 1. Kiểm tra mục tiêu chốt lời ngày (Daily Target Profit)
+   if(InpDailyTargetProfit > 0.0)
+     {
+      if(today_profit >= InpDailyTargetProfit)
+        {
+         g_daily_target_reached = true;
+         g_ea_stopped = true;
+         
+         string reason = StringFormat("ĐẠT MỤC TIÊU LỢI NHUẬN NGÀY (Lãi hôm nay: %.2f USD >= Mục tiêu: %.2f USD)", today_profit, InpDailyTargetProfit);
+         Print("==================================================================");
+         Print("=> [DAILY TARGET HIT] ", reason);
+         Print("=> Đang chốt hết toàn bộ lệnh đang mở và tạm dừng giao dịch chờ ngày mai reset.");
+         Print("==================================================================");
+         
+         CloseAllPositions(reason);
+         
+         for(int i = 0; i < g_scenarios_count; i++)
+           {
+            if(g_scenarios[i].status == PENDING)
+               g_scenarios[i].status = EXPIRED;
+           }
+         
+         g_is_trading = false;
+         g_active_scenario_index = -1;
+         g_trade_start_time = 0;
+         return;
+        }
+     }
+
+   // 2. Kiểm tra ngưỡng cắt lỗ tối đa 1 ngày (Max Daily Loss)
+   if(InpMaxDailyLoss > 0.0)
+     {
+      if(today_profit <= -MathAbs(InpMaxDailyLoss))
+        {
+         g_daily_loss_reached = true;
+         g_ea_stopped = true;
+         
+         string reason = StringFormat("CHẠM NGƯỠNG CẮT LỖ TỐI ĐA NGÀY (Lỗ hôm nay: %.2f USD <= Giới hạn: -%.2f USD)", today_profit, InpMaxDailyLoss);
+         Print("==================================================================");
+         Print("=> [MAX DAILY LOSS HIT] ", reason);
+         Print("=> Đang đóng toàn bộ lệnh và tạm dừng giao dịch ngày hôm nay để bảo vệ vốn!");
+         Print("==================================================================");
+         
+         CloseAllPositions(reason);
+         
+         for(int i = 0; i < g_scenarios_count; i++)
+           {
+            if(g_scenarios[i].status == PENDING)
+               g_scenarios[i].status = EXPIRED;
+           }
+         
+         g_is_trading = false;
+         g_active_scenario_index = -1;
+         g_trade_start_time = 0;
+        }
+     }
+  }
+
+//+------------------------------------------------------------------+
+//| Hiển thị Dashboard trạng thái EA lên Chart                       |
+//+------------------------------------------------------------------+
+void UpdateChartDashboard()
+  {
+   double today_pnl = CalculateTodayNetProfit();
+   string status_str = "";
+   
+   if(g_daily_loss_reached)
+     {
+      status_str = StringFormat("🔴 ĐÃ CHẠM NGƯỠNG LỖ TỐI ĐA NGÀY (-%.2f USD) - NGHỈ ĐẾN HÔM SAU", InpMaxDailyLoss);
+     }
+   else if(g_daily_target_reached)
+     {
+      status_str = StringFormat("🟢 ĐÃ ĐẠT MỤC TIÊU LÃI NGÀY (+%.2f USD) - NGHỈ ĐẾN HÔM SAU", InpDailyTargetProfit);
+     }
+   else if(IsInLossCooldown())
+     {
+      int rem_sec = (int)((InpLossCooldownMinutes * 60) - (TimeCurrent() - g_last_loss_time));
+      if(rem_sec < 0) rem_sec = 0;
+      status_str = StringFormat("🟠 ĐANG NGHỈ SAU LỖ (LOSS COOLDOWN) - CÒN %d PHÚT %d GIÂY", rem_sec / 60, rem_sec % 60);
+     }
+   else if(g_is_trading)
+     {
+      status_str = "🔵 ĐANG TRONG LỆNH (ACTIVE TRADING)";
+     }
+   else
+     {
+      status_str = "⚪ ĐANG GIÁM SÁT KỊCH BẢN (MONITORING)";
+     }
+     
+   string info = "==================================================\n";
+   info += "🤖 AI TRADING BOT - " + _Symbol + "\n";
+   info += "Trạng thái: " + status_str + "\n";
+   info += StringFormat("Lợi nhuận hôm nay: %.2f USD", today_pnl);
+   if(InpDailyTargetProfit > 0.0)
+      info += StringFormat(" / Mục tiêu lãi: %.2f USD (%.1f%%)", InpDailyTargetProfit, (today_pnl / InpDailyTargetProfit) * 100.0);
+   else
+      info += " / Mục tiêu lãi: Không giới hạn";
+   info += "\n";
+   
+   if(InpMaxDailyLoss > 0.0)
+      info += StringFormat("Giới hạn lỗ tối đa ngày: -%.2f USD\n", InpMaxDailyLoss);
+      
+   info += StringFormat("Signal ID hiện tại: %s | Số kịch bản: %d\n", (g_current_signal_id == "" ? "Chưa có" : g_current_signal_id), g_scenarios_count);
+   if(IsInLossCooldown())
+     {
+      info += StringFormat("Thời gian nghỉ sau SL: %d phút (Tránh nhồi lệnh liên tục)\n", InpLossCooldownMinutes);
+     }
+   info += "==================================================";
+   
+   Comment(info);
+  }
+
+//+------------------------------------------------------------------+
 //| Kiểm tra xem toàn bộ các kịch bản đã kết thúc/hết hiệu lực chưa   |
 //+------------------------------------------------------------------+
 bool IsAllScenariosFinished() {
+    // Nếu đã dừng giao dịch trong ngày (đạt lãi hoặc chạm ngưỡng lỗ tối đa), hoặc đang trong thời gian nghỉ sau lỗ -> Không xin plan mới
+    if(IsDayStopped()) return false;
+    if(IsInLossCooldown()) return false;
+
     // Nếu đang có lệnh hoặc đang trong chu trình giao dịch -> Chưa kết thúc
     if(HasOpenPositions() || g_is_trading) return false;
     
@@ -480,8 +705,14 @@ int OnInit()
    trade.SetDeviationInPoints(InpSlippage);
    trade.SetTypeFillingBySymbol(_Symbol);
 
-   // Kiểm tra kịch bản AI ngay lúc khởi động
-   CheckAndFetchNewScenario();
+   // Kiểm tra và khởi tạo trạng thái ngày giao dịch & mục tiêu lợi nhuận
+   CheckAndResetDailyTarget();
+   CheckDailyTargetProfit();
+   UpdateChartDashboard();
+
+   // Kiểm tra kịch bản AI ngay lúc khởi động (nếu chưa chạm mục tiêu/ngưỡng dừng ngày)
+   if(!IsDayStopped())
+      CheckAndFetchNewScenario();
    
    return(INIT_SUCCEEDED);
   }
@@ -491,6 +722,8 @@ int OnInit()
 //+------------------------------------------------------------------+
 void OnDeinit(const int reason)
   {
+   Comment(""); // Xóa dashboard chart
+
    // Giải phóng Handle Indicator
    for(int i = 0; i < 4; i++)
      {
@@ -554,10 +787,36 @@ string BuildSingleCandleJson(int tf_index, ENUM_TIMEFRAMES tf)
 //+------------------------------------------------------------------+
 void SendMarketDataUpdate()
   {
-   bool refresh_plan = IsAllScenariosFinished();
-   if(refresh_plan)
+   bool refresh_plan = false;
+   if(!IsDayStopped() && !IsInLossCooldown())
      {
-      Print("=> [REFRESH PLAN] Tất cả kịch bản đã đi qua / hết hiệu lực. Đang gửi kèm \"refreshPlan\": true trong body update.");
+      if(IsAllScenariosFinished())
+        {
+         if(g_last_plan_request_time == 0 || (TimeCurrent() - g_last_plan_request_time >= InpMinPlanIntervalMinutes * 60))
+           {
+            refresh_plan = true;
+            g_last_plan_request_time = TimeCurrent();
+            Print("=> [REFRESH PLAN] Tất cả kịch bản đã đi qua / hết hiệu lực. Đang gửi kèm \"refreshPlan\": true trong body update (Giãn cách tối thiểu: ", InpMinPlanIntervalMinutes, " phút).");
+           }
+         else
+           {
+            int remaining_sec = (int)((InpMinPlanIntervalMinutes * 60) - (TimeCurrent() - g_last_plan_request_time));
+            Print("=> [REFRESH PLAN SKIP] Đang trong thời gian giãn cách giữa các lần xin kịch bản (còn ", remaining_sec / 60, " phút ", remaining_sec % 60, "s). Không gửi refreshPlan.");
+           }
+        }
+     }
+   else if(g_daily_loss_reached)
+     {
+      Print("=> [UPDATE] Đã chạm ngưỡng cắt lỗ tối đa ngày (-", InpMaxDailyLoss, " USD). Chỉ gửi nến, không xin kịch bản (refreshPlan=false).");
+     }
+   else if(g_daily_target_reached)
+     {
+      Print("=> [UPDATE] Đã đạt mục tiêu lợi nhuận ngày (+", InpDailyTargetProfit, " USD). Chỉ gửi nến, không xin kịch bản (refreshPlan=false).");
+     }
+   else if(IsInLossCooldown())
+     {
+      int rem_sec = (int)((InpLossCooldownMinutes * 60) - (TimeCurrent() - g_last_loss_time));
+      Print("=> [UPDATE] Đang trong thời gian nghỉ sau lệnh thua (còn ", rem_sec / 60, " phút ", rem_sec % 60, "s). Không xin kịch bản.");
      }
 
    string json = "{\n";
@@ -615,6 +874,11 @@ void OnTick()
   {
    datetime current_time = TimeLocal();
 
+   // 0. Quản lý ngày giao dịch, kiểm tra ngưỡng mục tiêu ngày & cập nhật dashboard
+   CheckAndResetDailyTarget();
+   CheckDailyTargetProfit();
+   UpdateChartDashboard();
+
    // 1. Xử lý Update theo nến
    // Lấy thời gian mở cửa của nến Trigger hiện tại
    datetime current_trigger_time = iTime(_Symbol, InpTriggerTimeframe, 0);
@@ -631,12 +895,15 @@ void OnTick()
          SendMarketDataUpdate();
      }
 
-   // 2. Định kỳ kiểm tra kịch bản mới từ API (nếu chưa có lệnh nào đang chạy)
+   // 2. Định kỳ kiểm tra kịch bản mới từ API (nếu chưa có lệnh nào đang chạy và chưa dừng giao dịch ngày)
    if(current_time - g_last_scenario_check >= InpCheckScenarioSec)
      {
       g_last_scenario_check = current_time;
-      Print("=> [TICK TRIGGER] Đến chu kỳ kiểm tra kịch bản (mỗi ", InpCheckScenarioSec, "s). Đang gọi CheckAndFetchNewScenario()...");
-      CheckAndFetchNewScenario();
+      if(!IsDayStopped() && !IsInLossCooldown() && !HasOpenPositions() && !g_is_trading)
+        {
+         Print("=> [TICK TRIGGER] Đến chu kỳ kiểm tra kịch bản (mỗi ", InpCheckScenarioSec, "s). Đang gọi CheckAndFetchNewScenario()...");
+         CheckAndFetchNewScenario();
+        }
      }
 
    // 3. Giám sát giá và thực thi kế hoạch kịch bản
@@ -682,7 +949,27 @@ bool SendHttpGetRequest(string target_url, string &response_str)
 //+------------------------------------------------------------------+
 void CheckAndFetchNewScenario()
   {
-   // CHỐT CHẶN AN TOÀN: Nếu đang có bất kỳ lệnh nào đang mở (hoặc đang trong chu trình giao dịch của kịch bản),
+   // CHỐT CHẶN AN TOÀN 1: Nếu đã dừng giao dịch trong ngày (đạt lãi hoặc chạm lỗ tối đa) -> Nghỉ ngơi
+   if(g_daily_loss_reached)
+     {
+      Print("[SCENARIO SKIP] Đã chạm ngưỡng cắt lỗ tối đa ngày (-", InpMaxDailyLoss, " USD). Tạm dừng xin kịch bản và giao dịch cho đến ngày mai.");
+      return;
+     }
+   if(g_daily_target_reached)
+     {
+      Print("[SCENARIO SKIP] Đã đạt mục tiêu lợi nhuận trong ngày (+", InpDailyTargetProfit, " USD). Tạm dừng kiểm tra/xin kịch bản cho đến ngày mai.");
+      return;
+     }
+
+   // CHỐT CHẶN AN TOÀN 2: Nếu đang trong thời gian nghỉ sau lệnh thua -> Tạm hoãn để tránh nhồi lệnh
+   if(IsInLossCooldown())
+     {
+      int remaining_sec = (int)((InpLossCooldownMinutes * 60) - (TimeCurrent() - g_last_loss_time));
+      Print(StringFormat("[SCENARIO SKIP] Đang trong thời gian nghỉ sau lệnh thua để tránh nhồi lệnh (còn %d phút %d giây).", remaining_sec / 60, remaining_sec % 60));
+      return;
+     }
+
+   // CHỐT CHẶN AN TOÀN 3: Nếu đang có bất kỳ lệnh nào đang mở (hoặc đang trong chu trình giao dịch của kịch bản),
    // TUYỆT ĐỐI KHÔNG GỌI API KIỂM TRA HAY TẢI KỊCH BẢN MỚI
    if(HasOpenPositions())
      {
@@ -1866,7 +2153,8 @@ void ProcessBreakoutScenario(int index, double bid, double ask)
 //| Giám sát và thực thi kế hoạch giao dịch                          |
 //+------------------------------------------------------------------+
 void MonitorScenarios() {
-    if(g_ea_stopped) return;
+    if(IsDayStopped()) return;
+    if(g_ea_stopped && !g_is_trading) return;
     
     double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
     double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
@@ -1908,6 +2196,8 @@ void MonitorScenarios() {
             g_active_scenario_index = -1;
             g_trade_start_time = 0;
             g_last_small_tf_bar = 0;
+
+            CheckDailyTargetProfit();
         } else {
             if(ai >= 0 && ai < g_scenarios_count)
               {
@@ -1915,16 +2205,37 @@ void MonitorScenarios() {
                g_scenarios[ai].reversal_confirm_filled = true;
               }
             Print("Kịch bản [", sid, "] bị SL/lỗ (LOSS) profit: ", net_profit,
-                  ". Không vào nửa lot confirm. Quay lại giám sát kịch bản còn lại.");
+                  ". Hủy các kịch bản đang chờ để tránh nhồi lệnh.");
+
+            for(int k = 0; k < g_scenarios_count; k++)
+              {
+               if(g_scenarios[k].status == PENDING)
+                  g_scenarios[k].status = EXPIRED;
+              }
+
             g_is_trading = false;
             g_active_scenario_index = -1;
             g_trade_start_time = 0;
             g_last_small_tf_bar = 0;
+
+            if(InpLossCooldownMinutes > 0)
+              {
+               g_last_loss_time = TimeCurrent();
+               Print(StringFormat("=> [LOSS COOLDOWN] Kịch bản [%s] bị lỗ (%.2f USD). Kích hoạt thời gian nghỉ %d phút để tránh nhồi lệnh liên tục (nghỉ đến %s).",
+                     sid, net_profit, InpLossCooldownMinutes,
+                     TimeToString(g_last_loss_time + InpLossCooldownMinutes * 60, TIME_DATE|TIME_MINUTES)));
+              }
+
+            CheckDailyTargetProfit();
         }
         return;
     }
     
-    // NẾU KHÔNG CÓ LỆNH -> Giám sát đồng thời các kịch bản đang PENDING
+    // NẾU KHÔNG CÓ LỆNH:
+    // Nếu đang trong thời gian nghỉ sau lỗ -> không kích hoạt bất kỳ kịch bản nào
+    if(IsInLossCooldown()) return;
+
+    // Giám sát đồng thời các kịch bản đang PENDING
     for(int i = 0; i < g_scenarios_count; i++) {
         if(g_scenarios[i].status != PENDING) continue;
         
