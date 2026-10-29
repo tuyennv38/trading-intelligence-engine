@@ -13,11 +13,12 @@
 input string BaseUrl         = "https://botai.cscmobicorp.com";
 input bool   InpUseAiStructure = true;             // Sử dụng AI Structure (Gửi trường "useAiStructure" trong /initialize)
 input bool   InpCallInitialize = false;            // true = gọi /initialize lúc OnInit. false = bỏ qua init
-input bool   InpCallUpdate     = true;             // true = gửi dữ liệu /update sau mỗi nến Trigger. false = tắt gửi /update
+input bool   InpCallUpdate     = false;            // true = gửi dữ liệu /update sau mỗi nến Trigger. false = tắt gửi /update
 
 //--- Cài đặt Cầu Nối Mobius Strategy API (ICT/SMC RAG) ---
 input bool   InpUseMobiusBridge           = true;             // Bật cầu nối gọi Mobius API khi không có kịch bản
-input int    InpMobiusFetchIntervalHours  = 2;                // Chu kỳ đóng nến để gọi Mobius lấy kịch bản (giờ, mặc định 2h, 0 = tắt)
+input int    InpMobiusFetchIntervalHours  = 1;                // Chu kỳ đóng nến để gọi Mobius lấy kịch bản (giờ, mặc định 1h, 0 = tắt)
+input int    InpMobiusFetchIntervalMinutes = 0;               // Ưu tiên chu kỳ đóng nến theo phút (ví dụ 1, 5, 15, 30 phút). 0 = dùng theo giờ
 input string InpMobiusInterval            = "1h";             // Tham số interval đẩy lên Mobius (1h, 4h, 15m, ...)
 input string InpMobiusSchools             = "ICT,SMC";        // Danh sách trường phái (phân tách dấu phẩy)
 input int    InpMobiusTopKCards           = 3;                // Số thẻ kiến thức truy hồi (top_k_cards)
@@ -35,7 +36,7 @@ input double InpMaxRiskMoney     = 100.0;            // Số tiền chịu rủi
 input ulong  InpMagicNumber      = 123456;           // Magic Number
 input int    InpSlippage         = 10;               // Slippage
 input int    InpBreakevenOffset  = 20;               // Bù trừ hòa vốn (Points) để bù phí khi dời SL sau TP1
-input int    InpCheckScenarioSec = 180;              // Thời gian gọi API kiểm tra kịch bản mới (giây) - Mặc định 180s (3 phút)
+input int    InpCheckScenarioSec = 60;               // Thời gian gọi API kiểm tra kịch bản mới (giây) - Mặc định 60s (1 phút)
 input int    InpMaxConfirmBars   = 8;                // Tối đa nến confirm sau khi giá vào zone (REVERSAL). 0 = không giới hạn
 input int    InpMaxRetestBars    = 12;               // Tối đa nến retest sau khi phá (BREAKOUT). 0 = không giới hạn
 
@@ -50,17 +51,17 @@ input ENUM_TIMEFRAMES InpTriggerTimeframe = PERIOD_M1; // Scalping: mỗi nến 
 // Scalping mặc định: H1 bias → M15 xác nhận kịch bản → M5 vào lệnh / retest.
 // Số nến đủ BOS/CHOCH, không phình prompt AI.
 //--- Cài đặt Timeframe 1 ---
-input bool             InpEnableTf1       = true;             // Kích hoạt Timeframe 1
+input bool             InpEnableTf1       = false;            // Kích hoạt Timeframe 1 (mặc định tắt)
 input ENUM_TIMEFRAMES  InpTimeframe1      = PERIOD_H1;        // Bias / cấu trúc khung lớn
 input int              InpCandles1        = 96;               // 96 H1 ≈ 4 ngày
 
 //--- Cài đặt Timeframe 2 ---
-input bool             InpEnableTf2       = true;             // Kích hoạt Timeframe 2
+input bool             InpEnableTf2       = false;            // Kích hoạt Timeframe 2 (mặc định tắt)
 input ENUM_TIMEFRAMES  InpTimeframe2      = PERIOD_M15;       // Xác nhận kịch bản (confirm)
 input int              InpCandles2        = 96;               // 96 M15 ≈ 24 giờ
 
 //--- Cài đặt Timeframe 3 ---
-input bool             InpEnableTf3       = true;             // Kích hoạt Timeframe 3
+input bool             InpEnableTf3       = false;            // Kích hoạt Timeframe 3 (mặc định tắt)
 input ENUM_TIMEFRAMES  InpTimeframe3      = PERIOD_M5;        // Vào lệnh / retest
 input int              InpCandles3        = 72;               // 72 M5 ≈ 6 giờ (1 phiên)
 
@@ -137,6 +138,8 @@ Scenario g_scenarios[];
 int      g_scenarios_count = 0;
 
 string   g_current_signal_id = "";        // Lưu signal_id đang xử lý
+string   g_current_bias = "";             // Lưu bias thị trường (Bullish / Bearish / Sideway)
+long     g_current_plan_created_at = 0;   // Thời điểm tạo kịch bản hiện tại (unix timestamp)
 bool     g_is_trading = false;           // Đang có lệnh chạy hay không
 datetime g_trade_start_time = 0;         // Thời điểm bắt đầu vào lệnh
 datetime g_last_small_tf_bar = 0;        // Nến khung nhỏ đã kiểm tra tín hiệu đảo chiều
@@ -158,6 +161,36 @@ bool IsDayStopped()
   }
 
 //+------------------------------------------------------------------+
+//| Chuyển enum loại kịch bản thành chuỗi hiển thị rõ ràng           |
+//+------------------------------------------------------------------+
+string ScenarioTypeToString(ENUM_SCENARIO_TYPE type)
+  {
+   switch(type)
+     {
+      case REVERSAL_SELL: return "SELL ĐẢO CHIỀU (REVERSAL_SELL)";
+      case REVERSAL_BUY:  return "BUY ĐẢO CHIỀU (REVERSAL_BUY)";
+      case BREAKOUT_SELL: return "SELL PHÁ VỠ (BREAKOUT_SELL)";
+      case BREAKOUT_BUY:  return "BUY PHÁ VỠ (BREAKOUT_BUY)";
+      default:            return "UNKNOWN";
+     }
+  }
+
+//+------------------------------------------------------------------+
+//| Chuyển enum trạng thái kịch bản thành chuỗi hiển thị             |
+//+------------------------------------------------------------------+
+string ScenarioStatusToString(ENUM_SCENARIO_STATUS status)
+  {
+   switch(status)
+     {
+      case PENDING:   return "ĐANG CHỜ (PENDING)";
+      case ACTIVE:    return "ĐANG VÀO LỆNH (ACTIVE)";
+      case EXPIRED:   return "HẾT HIỆU LỰC (EXPIRED)";
+      case COMPLETED: return "HOÀN THÀNH (COMPLETED)";
+      default:        return "UNKNOWN";
+     }
+  }
+
+//+------------------------------------------------------------------+
 //| Chuyển chuỗi TF thành ENUM_TIMEFRAMES                            |
 //+------------------------------------------------------------------+
 ENUM_TIMEFRAMES StringToTimeframe(string tf) {
@@ -170,6 +203,28 @@ ENUM_TIMEFRAMES StringToTimeframe(string tf) {
     if(tf == "D1") return PERIOD_D1;
     return PERIOD_CURRENT;
 }
+
+//+------------------------------------------------------------------+
+//| Chuyển số phút thành ENUM_TIMEFRAMES tương ứng                   |
+//+------------------------------------------------------------------+
+ENUM_TIMEFRAMES MinutesToTimeframe(int minutes)
+  {
+   if(minutes <= 1)   return PERIOD_M1;
+   if(minutes <= 2)   return PERIOD_M2;
+   if(minutes <= 3)   return PERIOD_M3;
+   if(minutes <= 4)   return PERIOD_M4;
+   if(minutes <= 5)   return PERIOD_M5;
+   if(minutes <= 6)   return PERIOD_M6;
+   if(minutes <= 10)  return PERIOD_M10;
+   if(minutes <= 12)  return PERIOD_M12;
+   if(minutes <= 15)  return PERIOD_M15;
+   if(minutes <= 20)  return PERIOD_M20;
+   if(minutes <= 30)  return PERIOD_M30;
+   if(minutes <= 60)  return PERIOD_H1;
+   if(minutes <= 120) return PERIOD_H2;
+   if(minutes <= 240) return PERIOD_H4;
+   return PERIOD_D1;
+  }
 
 //+------------------------------------------------------------------+
 //| 1 bậc nhỏ hơn khung confirm (M15→M5, M5→M1, H1→M15, H4→H1)       |
@@ -393,13 +448,70 @@ void UpdateChartDashboard()
       info += StringFormat("Giới hạn lỗ tối đa ngày: -%.2f USD\n", InpMaxDailyLoss);
       
    info += StringFormat("Signal ID hiện tại: %s | Số kịch bản: %d\n", (g_current_signal_id == "" ? "Chưa có" : g_current_signal_id), g_scenarios_count);
-   if(InpUseMobiusBridge && InpMobiusFetchIntervalHours > 0)
+   if(StringLen(g_current_bias) > 0)
      {
-      info += StringFormat("Mobius Bridge: BẬT (Sau %dh đóng nến, interval: %s)\n", InpMobiusFetchIntervalHours, InpMobiusInterval);
+      info += StringFormat("Định hướng chung (Bias): %s\n", g_current_bias);
+     }
+   if(InpUseMobiusBridge)
+     {
+      if(InpMobiusFetchIntervalMinutes > 0)
+         info += StringFormat("Mobius Bridge: BẬT (Sau %dm đóng nến, interval: %s)\n", InpMobiusFetchIntervalMinutes, InpMobiusInterval);
+      else if(InpMobiusFetchIntervalHours > 0)
+         info += StringFormat("Mobius Bridge: BẬT (Sau %dh đóng nến, interval: %s)\n", InpMobiusFetchIntervalHours, InpMobiusInterval);
      }
    if(IsInLossCooldown())
      {
       info += StringFormat("Thời gian nghỉ sau SL: %d phút (Tránh nhồi lệnh liên tục)\n", InpLossCooldownMinutes);
+     }
+
+   if(g_scenarios_count > 0)
+     {
+      info += "--------------------------------------------------\n";
+      info += "📋 CHI TIẾT CÁC KỊCH BẢN ĐANG THEO DÕI:\n";
+      for(int i = 0; i < g_scenarios_count; i++)
+        {
+         string st_str = ScenarioStatusToString(g_scenarios[i].status);
+         if(g_is_trading && g_active_scenario_index == i)
+           {
+            st_str = "🔥 ĐANG VÀO LỆNH (IN TRADE)";
+           }
+         
+         string name_display = (StringLen(g_scenarios[i].name) > 0) ? g_scenarios[i].name : g_scenarios[i].id;
+         info += StringFormat("▶ [%d] %s\n", i + 1, name_display);
+         info += StringFormat("   • Loại: %s\n", ScenarioTypeToString(g_scenarios[i].type));
+         info += StringFormat("   • Trạng thái: %s\n", st_str);
+         
+         if(g_scenarios[i].type == REVERSAL_BUY || g_scenarios[i].type == REVERSAL_SELL)
+           {
+            info += StringFormat("   • Vùng Entry: [%s - %s] | SL: %s\n",
+                                 DoubleToString(g_scenarios[i].entry_min, _Digits),
+                                 DoubleToString(g_scenarios[i].entry_max, _Digits),
+                                 DoubleToString(g_scenarios[i].sl, _Digits));
+           }
+         else
+           {
+            info += StringFormat("   • Trigger phá vỡ: %s | SL: %s\n",
+                                 DoubleToString(g_scenarios[i].trigger_price, _Digits),
+                                 DoubleToString(g_scenarios[i].sl, _Digits));
+           }
+
+         string tp_line = "   • ";
+         for(int t = 0; t < g_scenarios[i].tps_count; t++)
+           {
+            if(t > 0) tp_line += " | ";
+            tp_line += StringFormat("TP%d: %s", t + 1, DoubleToString(g_scenarios[i].tps[t], _Digits));
+           }
+         if(g_scenarios[i].tps_count == 0) tp_line += "TP: Chưa thiết lập";
+         tp_line += StringFormat(" | Rủi ro: $%.2f", g_scenarios[i].max_risk_usd);
+         info += tp_line + "\n";
+
+         string confirm_str = StringFormat("   • Khung nến xác nhận: %s", TimeframeToString(g_scenarios[i].confirm_timeframe));
+         if(g_scenarios[i].type == BREAKOUT_BUY || g_scenarios[i].type == BREAKOUT_SELL)
+           {
+            confirm_str += StringFormat(" (Retest: %s)", TimeframeToString(g_scenarios[i].retest_timeframe));
+           }
+         info += confirm_str + "\n";
+        }
      }
    info += "==================================================";
    
@@ -797,11 +909,11 @@ void OnDeinit(const int reason)
    // Giải phóng Handle Indicator
    for(int i = 0; i < 4; i++)
      {
-      IndicatorRelease(h_emaFast[i]);
-      IndicatorRelease(h_emaSlow[i]);
-      IndicatorRelease(h_rsi[i]);
-      IndicatorRelease(h_atr[i]);
-      IndicatorRelease(h_adx[i]);
+      if(h_emaFast[i] != INVALID_HANDLE) IndicatorRelease(h_emaFast[i]);
+      if(h_emaSlow[i] != INVALID_HANDLE) IndicatorRelease(h_emaSlow[i]);
+      if(h_rsi[i] != INVALID_HANDLE)     IndicatorRelease(h_rsi[i]);
+      if(h_atr[i] != INVALID_HANDLE)     IndicatorRelease(h_atr[i]);
+      if(h_adx[i] != INVALID_HANDLE)     IndicatorRelease(h_adx[i]);
      }
   }
 
@@ -1100,16 +1212,27 @@ void CheckAndFetchNewScenario()
          g_scenarios_count = 0;
          ArrayResize(g_scenarios, 0);
          g_current_signal_id = "";
+         g_current_bias = "";
+         g_current_plan_created_at = 0;
+         UpdateChartDashboard();
         }
       Print("[SCENARIO] Signal ID [", new_signal_id, "] chưa có kịch bản (has_scenarios=false, no_trade=", (no_trade ? "true" : "false"), "). Tiếp tục gọi kiểm tra ở chu kỳ sau...");
       return;
      }
    
-   // NẾU CÓ KỊCH BẢN: So sánh với signal_id đang lưu giữ HOẶC chưa nạp kịch bản (g_scenarios_count == 0)
-   if(new_signal_id != g_current_signal_id || g_scenarios_count == 0)
+   long new_created_at = 0;
+   CJAVal* ca_node = json_latest.FindKey("created_at");
+   if(ca_node != NULL) new_created_at = (long)ca_node.ToInt();
+
+   // NẾU CÓ KỊCH BẢN: So sánh với signal_id hoặc created_at đang lưu giữ HOẶC chưa nạp kịch bản (g_scenarios_count == 0)
+   bool is_new_plan = (new_signal_id != g_current_signal_id) || 
+                      (new_created_at > 0 && new_created_at != g_current_plan_created_at) || 
+                      (g_scenarios_count == 0);
+
+   if(is_new_plan)
      {
       Print("--------------------------------------------------");
-      Print("[SCENARIO NEW] Phát hiện Signal ID có kịch bản sẵn sàng: [", new_signal_id, "] (Signal cũ: [", g_current_signal_id, "])");
+      Print(StringFormat("[SCENARIO NEW] Phát hiện kịch bản mới sẵn sàng: [%s] (Signal cũ: [%s]). Cập nhật thay thế kịch bản cũ...", new_signal_id, g_current_signal_id));
       Print("[SCENARIO CALL] Đang tải chi tiết kịch bản từ server...");
       
       string detail_url = GetApiUrl("/api/v1/scenarios/" + new_signal_id + "?symbol=" + _Symbol);
@@ -1118,11 +1241,13 @@ void CheckAndFetchNewScenario()
       if(SendHttpGetRequest(detail_url, detail_resp))
         {
          ParseAndLoadScenarioJson(detail_resp);
+         if(new_created_at > 0)
+            g_current_plan_created_at = new_created_at;
         }
      }
    else
      {
-      Print("[SCENARIO] Signal ID không đổi [", g_current_signal_id, "] (đang giám sát ", g_scenarios_count, " kịch bản), tiếp tục theo dõi.");
+      Print("[SCENARIO] Kịch bản không đổi [", g_current_signal_id, "] (đang giám sát ", g_scenarios_count, " kịch bản), tiếp tục theo dõi.");
      }
   }
 
@@ -1157,6 +1282,9 @@ void ParseAndLoadScenarioJson(string json_str)
       Print("[SCENARIO] Mảng 'scenarios' rỗng (0 kịch bản). Tiếp tục đợi kịch bản ở chu kỳ sau...");
       g_scenarios_count = 0;
       ArrayResize(g_scenarios, 0);
+      g_current_bias = "";
+      g_current_plan_created_at = 0;
+      UpdateChartDashboard();
       return;
      }
      
@@ -1165,6 +1293,12 @@ void ParseAndLoadScenarioJson(string json_str)
      {
       g_current_signal_id = "MOBIUS_" + TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS) + "_" + _Symbol;
      }
+   g_current_bias = json["bias"].ToStr();
+   CJAVal* ca_node = json.FindKey("created_at");
+   if(ca_node != NULL)
+      g_current_plan_created_at = (long)ca_node.ToInt();
+   else
+      g_current_plan_created_at = (long)TimeCurrent();
    g_scenarios_count = sc_array.Size();
    ArrayResize(g_scenarios, g_scenarios_count);
    
@@ -1293,6 +1427,7 @@ void ParseAndLoadScenarioJson(string json_str)
    
    Print("=== [NẠP HOÀN TẤT] Tổng cộng ", g_scenarios_count, " kịch bản đã sẵn sàng giám sát! ===");
    Print("--------------------------------------------------");
+   UpdateChartDashboard();
   }
 
 //+------------------------------------------------------------------+
@@ -1396,17 +1531,31 @@ bool FetchMobiusScenariosFromBridge()
   }
 
 //+------------------------------------------------------------------+
-//| Kiểm tra đóng nến chu kỳ (mặc định 2h) để gọi cầu nối Mobius     |
+//| Kiểm tra đóng nến chu kỳ để gọi cầu nối Mobius                   |
 //+------------------------------------------------------------------+
 void CheckMobiusBridgeOnBarClose()
   {
-   if(!InpUseMobiusBridge || InpMobiusFetchIntervalHours <= 0) return;
+   if(!InpUseMobiusBridge) return;
+   if(InpMobiusFetchIntervalMinutes <= 0 && InpMobiusFetchIntervalHours <= 0) return;
    if(IsDayStopped() || IsInLossCooldown() || HasOpenPositions() || g_is_trading) return;
 
-   // Chỉ gọi khi KHÔNG CÓ kịch bản hoặc toàn bộ kịch bản đã kết thúc/hết hạn
-   if(g_scenarios_count > 0 && !IsAllScenariosFinished()) return;
+   ENUM_TIMEFRAMES mobius_tf = PERIOD_H1;
+   int interval_sec = 3600;
+   string interval_label = "";
 
-   ENUM_TIMEFRAMES mobius_tf = HoursToTimeframe(InpMobiusFetchIntervalHours);
+   if(InpMobiusFetchIntervalMinutes > 0)
+     {
+      mobius_tf = MinutesToTimeframe(InpMobiusFetchIntervalMinutes);
+      interval_sec = InpMobiusFetchIntervalMinutes * 60;
+      interval_label = StringFormat("%d phút", InpMobiusFetchIntervalMinutes);
+     }
+   else
+     {
+      mobius_tf = HoursToTimeframe(InpMobiusFetchIntervalHours);
+      interval_sec = InpMobiusFetchIntervalHours * 3600;
+      interval_label = StringFormat("%d giờ", InpMobiusFetchIntervalHours);
+     }
+
    datetime current_bar_time = iTime(_Symbol, mobius_tf, 0);
    if(current_bar_time == 0) return;
 
@@ -1422,19 +1571,19 @@ void CheckMobiusBridgeOnBarClose()
       g_last_mobius_bar_time = current_bar_time;
 
       // Giãn cách an toàn tối thiểu
-      if(g_last_mobius_call_time > 0 && (TimeCurrent() - g_last_mobius_call_time < InpMobiusFetchIntervalHours * 3600 - 60))
+      if(g_last_mobius_call_time > 0 && (TimeCurrent() - g_last_mobius_call_time < interval_sec - 60))
         {
          return;
         }
 
-      Print(StringFormat("=> [MOBIUS TRIGGER] Nến %s (%d giờ) vừa đóng cửa. Hiện tại chưa có kịch bản. Đang gọi cầu nối Mobius API...",
-            TimeframeToString(mobius_tf), InpMobiusFetchIntervalHours));
+      Print(StringFormat("=> [MOBIUS TRIGGER] Nến %s (%s) vừa đóng cửa. Chưa vào lệnh nào. Đang gọi cầu nối Mobius API để lấy kịch bản mới nhất...",
+            TimeframeToString(mobius_tf), interval_label));
 
       if(FetchMobiusScenariosFromBridge())
         {
          g_last_mobius_call_time = TimeCurrent();
          g_last_plan_request_time = TimeCurrent();
-         Print("=> [MOBIUS TRIGGER SUCCESS] Đã nạp thành công kịch bản từ Mobius RAG!");
+         Print("=> [MOBIUS TRIGGER SUCCESS] Đã cập nhật thành công kịch bản mới từ Mobius RAG!");
         }
      }
   }

@@ -73,7 +73,8 @@ public class EaScenarioController : ControllerBase
             has_scenarios = plan.HasScenarios,
             no_trade = plan.HasNoTrade,
             looking_for_plan = lookingForPlan,
-            source = plan.Source
+            source = plan.Source,
+            created_at = plan.CreatedAt
         });
     }
 
