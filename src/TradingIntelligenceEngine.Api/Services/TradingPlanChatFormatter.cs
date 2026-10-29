@@ -38,7 +38,7 @@ public static class TradingPlanChatFormatter
         {
             sb.AppendLine("⛔ *KHUYẾN NGHỊ: ĐỨNG NGOÀI (NO TRADE)*");
             sb.AppendLine(noTradeHint
-                ?? "Đa khung chưa đồng pha / setup chưa rõ — không ép lệnh. EA cứ gửi nến mỗi phút; Hangfire sẽ tự hỏi lại AI sau 5 phút.");
+                ?? "Đa khung chưa đồng pha / setup chưa rõ — không ép lệnh.");
         }
 
         return sb.ToString();

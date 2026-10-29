@@ -172,23 +172,7 @@ public class TradingPlanRefreshService : ITradingPlanRefreshService
 
     public async Task RetryNoTradePlansAsync()
     {
-        var sessions = await _marketDataStore.ListSymbolSessionsAsync();
-        foreach (var session in sessions)
-        {
-            if (session.PlanRefreshInProgress)
-                continue;
-
-            var plan = await _marketDataStore.GetLatestPlanAsync(session.Symbol);
-            if (plan != null && plan.HasScenarios)
-                continue;
-            if (plan != null && plan.IsManual)
-                continue;
-
-            var (queued, message) = await EnqueueRefreshAsync(
-                session.Symbol, "Hangfire 5 phút — NO TRADE, tìm lại kịch bản");
-            _logger.LogInformation(
-                "Retry NO TRADE {Symbol}: queued={Queued} {Message}",
-                session.Symbol, queued, message);
-        }
+        // Đã bỏ cơ chế 5 phút định kỳ gọi AI tìm lại kịch bản
+        await Task.CompletedTask;
     }
 }

@@ -1,9 +1,11 @@
 using System;
+using System.Net.Http;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging;
 using TradingIntelligenceEngine.Api.Services;
 using TradingIntelligenceEngine.Application.DTOs.MarketData;
+using TradingIntelligenceEngine.Application.DTOs.Mobius;
 using TradingIntelligenceEngine.Application.Interfaces;
 using TradingIntelligenceEngine.Domain.AI;
 
@@ -15,17 +17,20 @@ public class EaScenarioController : ControllerBase
 {
     private readonly IMarketDataStore _marketDataStore;
     private readonly ITradingPlanRefreshService _planRefreshService;
+    private readonly IMobiusStrategyService _mobiusService;
     private readonly INotificationService _notifier;
     private readonly ILogger<EaScenarioController> _logger;
 
     public EaScenarioController(
         IMarketDataStore marketDataStore,
         ITradingPlanRefreshService planRefreshService,
+        IMobiusStrategyService mobiusService,
         INotificationService notifier,
         ILogger<EaScenarioController> logger)
     {
         _marketDataStore = marketDataStore;
         _planRefreshService = planRefreshService;
+        _mobiusService = mobiusService;
         _notifier = notifier;
         _logger = logger;
     }
@@ -73,8 +78,7 @@ public class EaScenarioController : ControllerBase
     }
 
     /// <summary>
-    /// EA poll mỗi 5 phút: nếu đã có kịch bản thì trả về; nếu chưa (NO TRADE / chưa xong init)
-    /// thì xếp hàng AI tìm kịch bản trên nến đã update.
+    /// Lấy kịch bản hiện tại cho EA (không tự động gọi AI tìm kịch bản khi trống).
     /// GET /api/v1/scenarios/current?symbol=XAUUSD
     /// </summary>
     [HttpGet("current")]
@@ -116,31 +120,18 @@ public class EaScenarioController : ControllerBase
             });
         }
 
-        bool refreshQueued = false;
-        string message = lookingForPlan
-            ? "AI đang tìm kịch bản. EA tiếp tục update nến mỗi phút, gọi lại sau 5 phút."
-            : "Chưa có kịch bản. Đang để AI tìm trên dữ liệu nến đã tích lũy.";
-
-        if (!lookingForPlan)
-        {
-            var (queued, refreshMessage) = await _planRefreshService.EnqueueRefreshAsync(
-                symbol, "EA poll /scenarios/current — chưa có kịch bản, tìm lại");
-            refreshQueued = queued;
-            lookingForPlan = queued || lookingForPlan;
-            if (!string.IsNullOrWhiteSpace(refreshMessage))
-                message = refreshMessage;
-        }
-
         return Ok(new
         {
             success = true,
             has_scenarios = false,
             no_trade = plan == null || plan.HasNoTrade,
             looking_for_plan = lookingForPlan,
-            refresh_queued = refreshQueued,
+            refresh_queued = false,
             signal_id = plan?.SignalId ?? string.Empty,
             context = plan?.Context,
-            message
+            message = lookingForPlan
+                ? "AI đang tìm kịch bản."
+                : "Chưa có kịch bản. Chờ kịch bản từ Mobius hoặc /scenarios/refresh."
         });
     }
 
@@ -301,5 +292,97 @@ public class EaScenarioController : ControllerBase
             return BadRequest(new { success = false, message });
 
         return Ok(new { success = true, message, refresh_queued = true });
+    }
+
+    /// <summary>
+    /// API cầu nối gọi sang Mobius Strategy Scenarios API (ICT/SMC).
+    /// Nhận các tham số symbol, interval, max_risk_usd từ EA hoặc client.
+    /// POST /api/v1/scenarios/mobius
+    /// POST /api/v1/strategy/scenarios
+    /// </summary>
+    [HttpPost("mobius")]
+    [HttpPost("/api/v1/strategy/scenarios")]
+    [ProducesResponseType(200)]
+    [ProducesResponseType(400)]
+    [ProducesResponseType(502)]
+    public async Task<IActionResult> PostMobiusScenarios(
+        [FromBody] MobiusScenarioRequest? bodyRequest,
+        [FromQuery] string? symbol,
+        [FromQuery] string? interval,
+        [FromQuery] decimal? max_risk_usd,
+        [FromQuery] bool? notify)
+    {
+        var request = bodyRequest ?? new MobiusScenarioRequest();
+
+        if (!string.IsNullOrWhiteSpace(symbol))
+            request.Symbol = symbol.Trim().ToUpperInvariant();
+        if (!string.IsNullOrWhiteSpace(interval))
+            request.Interval = interval.Trim();
+        if (max_risk_usd.HasValue && max_risk_usd.Value > 0)
+            request.MaxRiskUsd = max_risk_usd.Value;
+
+        try
+        {
+            var response = await _mobiusService.FetchAndApplyScenariosAsync(request, notify, HttpContext.RequestAborted);
+            return Ok(response);
+        }
+        catch (HttpRequestException ex)
+        {
+            _logger.LogError(ex, "Lỗi kết nối tới Mobius API: {Message}", ex.Message);
+            return StatusCode(502, new { success = false, message = $"Lỗi kết nối tới Mobius API: {ex.Message}" });
+        }
+        catch (TaskCanceledException ex) when (!HttpContext.RequestAborted.IsCancellationRequested)
+        {
+            _logger.LogError(ex, "Timeout khi chờ phản hồi từ Mobius API.");
+            return StatusCode(504, new { success = false, message = "Timeout khi gọi tới Mobius API." });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Lỗi xử lý cầu nối Mobius: {Message}", ex.Message);
+            return StatusCode(500, new { success = false, message = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// API cầu nối gọi sang Mobius Strategy Scenarios API qua GET query params.
+    /// GET /api/v1/scenarios/mobius?symbol=XAUUSD&amp;interval=1h&amp;max_risk_usd=100
+    /// </summary>
+    [HttpGet("mobius")]
+    [ProducesResponseType(200)]
+    [ProducesResponseType(400)]
+    [ProducesResponseType(502)]
+    public async Task<IActionResult> GetMobiusScenarios(
+        [FromQuery] string symbol = "XAUUSD",
+        [FromQuery] string interval = "1h",
+        [FromQuery] decimal? max_risk_usd = null,
+        [FromQuery] bool? notify = null)
+    {
+        var request = new MobiusScenarioRequest
+        {
+            Symbol = symbol,
+            Interval = interval,
+            MaxRiskUsd = max_risk_usd.HasValue && max_risk_usd.Value > 0 ? max_risk_usd.Value : 100m
+        };
+
+        try
+        {
+            var response = await _mobiusService.FetchAndApplyScenariosAsync(request, notify, HttpContext.RequestAborted);
+            return Ok(response);
+        }
+        catch (HttpRequestException ex)
+        {
+            _logger.LogError(ex, "Lỗi kết nối tới Mobius API: {Message}", ex.Message);
+            return StatusCode(502, new { success = false, message = $"Lỗi kết nối tới Mobius API: {ex.Message}" });
+        }
+        catch (TaskCanceledException ex) when (!HttpContext.RequestAborted.IsCancellationRequested)
+        {
+            _logger.LogError(ex, "Timeout khi chờ phản hồi từ Mobius API.");
+            return StatusCode(504, new { success = false, message = "Timeout khi gọi tới Mobius API." });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Lỗi xử lý cầu nối Mobius: {Message}", ex.Message);
+            return StatusCode(500, new { success = false, message = ex.Message });
+        }
     }
 }

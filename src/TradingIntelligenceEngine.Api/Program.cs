@@ -75,6 +75,10 @@ var aiProviderOptions = new AiProviderOptions();
 builder.Configuration.GetSection("AiProvider").Bind(aiProviderOptions);
 builder.Services.AddSingleton(aiProviderOptions);
 
+var mobiusOptions = new MobiusOptions();
+builder.Configuration.GetSection("Mobius").Bind(mobiusOptions);
+builder.Services.AddSingleton(mobiusOptions);
+
 // 2. Register domain & application services
 builder.Services.AddTransient<ISwingDetector, SwingDetector>();
 builder.Services.AddTransient<IStructureAnalyzer, StructureAnalyzer>();
@@ -98,6 +102,7 @@ builder.Services.AddTransient<IBacktestEngine, BacktestEngine>();
 builder.Services.AddHttpClient<IAiDecisionEngine, LlmDecisionEngine>();
 builder.Services.AddHttpClient<ITradingStrategistEngine, LlmTradingStrategistEngine>();
 builder.Services.AddHttpClient<IAiMarketStructureEngine, LlmMarketStructureEngine>();
+builder.Services.AddHttpClient<IMobiusStrategyService, TradingIntelligenceEngine.Api.Services.MobiusStrategyService>();
 
 // 3. Register Notification Service
 var notificationProvider = builder.Configuration["Notification:Provider"];
@@ -125,10 +130,8 @@ app.UseSwaggerUI(c =>
 
 app.UseHangfireDashboard(); // Kích hoạt UI Dashboard theo dõi Background Job
 
-RecurringJob.AddOrUpdate<TradingIntelligenceEngine.Api.Services.ITradingPlanRefreshService>(
-    "retry-no-trade-plans",
-    service => service.RetryNoTradePlansAsync(),
-    "*/5 * * * *");
+// Đã bỏ cơ chế 5 phút định kỳ gọi AI tìm lại kịch bản
+RecurringJob.RemoveIfExists("retry-no-trade-plans");
 
 app.UseAuthorization();
 app.MapControllers();

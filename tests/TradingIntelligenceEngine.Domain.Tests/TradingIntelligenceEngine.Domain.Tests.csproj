@@ -22,6 +22,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\TradingIntelligenceEngine.Domain\TradingIntelligenceEngine.Domain.csproj" />
+    <ProjectReference Include="..\..\src\TradingIntelligenceEngine.Application\TradingIntelligenceEngine.Application.csproj" />
   </ItemGroup>
 
 </Project>

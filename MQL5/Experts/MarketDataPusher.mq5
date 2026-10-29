@@ -15,6 +15,15 @@ input bool   InpUseAiStructure = true;             // Sử dụng AI Structure (
 input bool   InpCallInitialize = false;            // true = gọi /initialize lúc OnInit. false = bỏ qua init
 input bool   InpCallUpdate     = true;             // true = gửi dữ liệu /update sau mỗi nến Trigger. false = tắt gửi /update
 
+//--- Cài đặt Cầu Nối Mobius Strategy API (ICT/SMC RAG) ---
+input bool   InpUseMobiusBridge           = true;             // Bật cầu nối gọi Mobius API khi không có kịch bản
+input int    InpMobiusFetchIntervalHours  = 2;                // Chu kỳ đóng nến để gọi Mobius lấy kịch bản (giờ, mặc định 2h, 0 = tắt)
+input string InpMobiusInterval            = "1h";             // Tham số interval đẩy lên Mobius (1h, 4h, 15m, ...)
+input string InpMobiusSchools             = "ICT,SMC";        // Danh sách trường phái (phân tách dấu phẩy)
+input int    InpMobiusTopKCards           = 3;                // Số thẻ kiến thức truy hồi (top_k_cards)
+input string InpMobiusEndpoint            = "/api/v1/scenarios/mobius"; // Endpoint cầu nối trên server
+input bool   InpMobiusFetchOnStartIfEmpty = true;             // Gọi Mobius ngay khi start nếu chưa có kịch bản
+
 //--- Quản Lý Rủi Ro & Mục Tiêu Ngày (Daily Target & Loss Protection) ---
 input double InpDailyTargetProfit       = 100.0;            // Mục tiêu chốt lời ngày (USD, 0 = tắt). Đạt mức này sẽ chốt hết lệnh và nghỉ ngơi chờ hôm sau reset.
 input double InpMaxDailyLoss            = 200.0;            // Ngưỡng cắt lỗ tối đa 1 ngày (USD, 0 = tắt). Lỗ chạm mức này sẽ đóng hết lệnh và nghỉ ngơi chờ hôm sau reset.
@@ -139,6 +148,8 @@ datetime g_last_plan_request_time = 0;   // Thời điểm gửi yêu cầu xin 
 datetime g_current_trading_day = 0;      // Thời điểm bắt đầu ngày giao dịch hiện tại (PERIOD_D1)
 bool     g_daily_target_reached = false; // Đã đạt mục tiêu chốt lời ngày hôm nay
 bool     g_daily_loss_reached = false;   // Đã chạm ngưỡng cắt lỗ tối đa ngày hôm nay
+datetime g_last_mobius_bar_time = 0;     // Nến chu kỳ Mobius gần nhất đã xử lý
+datetime g_last_mobius_call_time = 0;    // Thời điểm gọi API Mobius gần nhất
 
 // Kiểm tra xem EA đã bị dừng giao dịch trong ngày chưa (do đạt lãi hoặc chạm lỗ tối đa)
 bool IsDayStopped()
@@ -382,6 +393,10 @@ void UpdateChartDashboard()
       info += StringFormat("Giới hạn lỗ tối đa ngày: -%.2f USD\n", InpMaxDailyLoss);
       
    info += StringFormat("Signal ID hiện tại: %s | Số kịch bản: %d\n", (g_current_signal_id == "" ? "Chưa có" : g_current_signal_id), g_scenarios_count);
+   if(InpUseMobiusBridge && InpMobiusFetchIntervalHours > 0)
+     {
+      info += StringFormat("Mobius Bridge: BẬT (Sau %dh đóng nến, interval: %s)\n", InpMobiusFetchIntervalHours, InpMobiusInterval);
+     }
    if(IsInLossCooldown())
      {
       info += StringFormat("Thời gian nghỉ sau SL: %d phút (Tránh nhồi lệnh liên tục)\n", InpLossCooldownMinutes);
@@ -500,6 +515,50 @@ bool SendHttpRequest(string json_data, string target_url, bool show_message)
          Print("[API ERROR SERVER] Trả về chi tiết: ", response_str);
         }
         
+      Print("--------------------------------------------------");
+      return false;
+     }
+  }
+
+//+------------------------------------------------------------------+
+//| Hàm gọi HTTP POST và trả về response_str                         |
+//+------------------------------------------------------------------+
+bool SendHttpPostWithResponse(string target_url, string json_data, string &response_str, int timeout_ms = 90000)
+  {
+   char post_data[];
+   char result_data[];
+   string result_headers;
+   
+   int size = StringToCharArray(json_data, post_data, 0, WHOLE_ARRAY, CP_UTF8);
+   if(size > 0)
+      ArrayResize(post_data, size - 1); // Loại bỏ ký tự null '\0' ở cuối
+      
+   string headers = "Content-Type: application/json\r\nAccept: application/json\r\n";
+   
+   Print("--------------------------------------------------");
+   Print("[API POST CALL] Bắt đầu gọi POST tới: ", target_url, " (Timeout: ", timeout_ms / 1000, "s)");
+   
+   int res = WebRequest("POST", target_url, headers, timeout_ms, post_data, result_data, result_headers);
+   
+   if(res == 200 || res == 201)
+     {
+      response_str = CharArrayToString(result_data, 0, WHOLE_ARRAY, CP_UTF8);
+      Print("[API POST SUCCESS] HTTP Code: ", res);
+      Print("--------------------------------------------------");
+      return true;
+     }
+   else
+     {
+      Print("[API POST ERROR] HTTP Code: ", res, " | URL: ", target_url, " | Lỗi MT5: ", GetLastError());
+      if(res == -1 && GetLastError() == 4014)
+        {
+         Print("[API ERROR 4014] LỖI BẢO MẬT MT5: Bạn chưa Allow WebRequest cho URL này trong Tools -> Options -> Expert Advisors.");
+        }
+      else if(ArraySize(result_data) > 0)
+        {
+         string err_body = CharArrayToString(result_data, 0, WHOLE_ARRAY, CP_UTF8);
+         Print("[API POST ERROR BODY] ", err_body);
+        }
       Print("--------------------------------------------------");
       return false;
      }
@@ -712,7 +771,18 @@ int OnInit()
 
    // Kiểm tra kịch bản AI ngay lúc khởi động (nếu chưa chạm mục tiêu/ngưỡng dừng ngày)
    if(!IsDayStopped())
+     {
       CheckAndFetchNewScenario();
+      if(InpUseMobiusBridge && InpMobiusFetchOnStartIfEmpty && g_scenarios_count == 0)
+        {
+         Print("=> [INIT MOBIUS] Chưa có kịch bản sẵn trên server. Kích hoạt gọi cầu nối Mobius ngay lúc khởi động...");
+         if(FetchMobiusScenariosFromBridge())
+           {
+            g_last_mobius_call_time = TimeCurrent();
+            g_last_plan_request_time = TimeCurrent();
+           }
+        }
+     }
    
    return(INIT_SUCCEEDED);
   }
@@ -788,7 +858,13 @@ string BuildSingleCandleJson(int tf_index, ENUM_TIMEFRAMES tf)
 void SendMarketDataUpdate()
   {
    bool refresh_plan = false;
-   if(!IsDayStopped() && !IsInLossCooldown())
+   if(InpUseMobiusBridge)
+     {
+      // Khi dùng Mobius Bridge: kịch bản được lấy qua cầu nối Mobius khi đóng nến chu kỳ (mặc định 2h)
+      // Bỏ cơ chế gửi nến trigger tự động gọi AI xin kịch bản
+      refresh_plan = false;
+     }
+   else if(!IsDayStopped() && !IsInLossCooldown())
      {
       if(IsAllScenariosFinished())
         {
@@ -904,6 +980,12 @@ void OnTick()
          Print("=> [TICK TRIGGER] Đến chu kỳ kiểm tra kịch bản (mỗi ", InpCheckScenarioSec, "s). Đang gọi CheckAndFetchNewScenario()...");
          CheckAndFetchNewScenario();
         }
+     }
+
+   // 2.1. Kiểm tra đóng nến chu kỳ (mặc định 2h) để gọi cầu nối Mobius API nếu chưa có kịch bản
+   if(InpUseMobiusBridge && InpMobiusFetchIntervalHours > 0)
+     {
+      CheckMobiusBridgeOnBarClose();
      }
 
    // 3. Giám sát giá và thực thi kế hoạch kịch bản
@@ -1079,6 +1161,10 @@ void ParseAndLoadScenarioJson(string json_str)
      }
      
    g_current_signal_id = json["signal_id"].ToStr();
+   if(StringLen(g_current_signal_id) == 0)
+     {
+      g_current_signal_id = "MOBIUS_" + TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS) + "_" + _Symbol;
+     }
    g_scenarios_count = sc_array.Size();
    ArrayResize(g_scenarios, g_scenarios_count);
    
@@ -1207,6 +1293,150 @@ void ParseAndLoadScenarioJson(string json_str)
    
    Print("=== [NẠP HOÀN TẤT] Tổng cộng ", g_scenarios_count, " kịch bản đã sẵn sàng giám sát! ===");
    Print("--------------------------------------------------");
+  }
+
+//+------------------------------------------------------------------+
+//| Chuyển số giờ chu kỳ thành ENUM_TIMEFRAMES tương ứng             |
+//+------------------------------------------------------------------+
+ENUM_TIMEFRAMES HoursToTimeframe(int hours)
+  {
+   if(hours <= 1) return PERIOD_H1;
+   if(hours == 2) return PERIOD_H2;
+   if(hours == 3) return PERIOD_H3;
+   if(hours == 4) return PERIOD_H4;
+   if(hours <= 6) return PERIOD_H6;
+   if(hours <= 8) return PERIOD_H8;
+   if(hours <= 12) return PERIOD_H12;
+   return PERIOD_D1;
+  }
+
+//+------------------------------------------------------------------+
+//| Gọi API cầu nối Mobius để lấy kịch bản ICT/SMC mới               |
+//+------------------------------------------------------------------+
+bool FetchMobiusScenariosFromBridge()
+  {
+   // CHỐT CHẶN AN TOÀN 1: Dừng ngày
+   if(IsDayStopped())
+     {
+      Print("[MOBIUS SKIP] Đã chạm ngưỡng mục tiêu/lỗ ngày. Không gọi Mobius.");
+      return false;
+     }
+   // CHỐT CHẶN AN TOÀN 2: Nghỉ sau lỗ
+   if(IsInLossCooldown())
+     {
+      Print("[MOBIUS SKIP] Đang trong thời gian nghỉ sau lỗ. Không gọi Mobius.");
+      return false;
+     }
+   // CHỐT CHẶN AN TOÀN 3: Lệnh đang chạy
+   if(HasOpenPositions() || g_is_trading)
+     {
+      Print("[MOBIUS SKIP] Đang có lệnh mở hoặc trong chu trình giao dịch. Tạm hoãn gọi Mobius.");
+      return false;
+     }
+
+   Print("--------------------------------------------------");
+   Print("=> [MOBIUS BRIDGE] Đang chuẩn bị gọi API cầu nối Mobius Scenarios cho ", _Symbol, " (Interval: ", InpMobiusInterval, ", Risk: ", InpMaxRiskMoney, " USD)...");
+
+   string target_url = (StringFind(InpMobiusEndpoint, "http://") == 0 || StringFind(InpMobiusEndpoint, "https://") == 0)
+                       ? InpMobiusEndpoint
+                       : GetApiUrl(InpMobiusEndpoint);
+
+   // Tách chuỗi schools thành JSON array
+   string schools_json = "[";
+   string schools_arr[];
+   int sc_count = StringSplit(InpMobiusSchools, ',', schools_arr);
+   if(sc_count <= 0)
+     {
+      schools_json = "[\"ICT\", \"SMC\"]";
+     }
+   else
+     {
+      for(int s = 0; s < sc_count; s++)
+        {
+         string school_item = schools_arr[s];
+         StringTrimLeft(school_item);
+         StringTrimRight(school_item);
+         if(StringLen(school_item) > 0)
+           {
+            if(s > 0) schools_json += ", ";
+            schools_json += "\"" + school_item + "\"";
+           }
+        }
+      schools_json += "]";
+     }
+
+   string req_body = "{\n";
+   req_body += "  \"symbol\": \"" + _Symbol + "\",\n";
+   req_body += "  \"interval\": \"" + InpMobiusInterval + "\",\n";
+   req_body += "  \"schools\": " + schools_json + ",\n";
+   req_body += "  \"top_k_cards\": " + IntegerToString(InpMobiusTopKCards) + ",\n";
+   req_body += "  \"max_risk_usd\": " + DoubleToString(InpMaxRiskMoney, 2) + ",\n";
+   req_body += "  \"use_llm\": true,\n";
+   req_body += "  \"language\": \"vi\"\n";
+   req_body += "}";
+
+   string resp_str = "";
+   if(!SendHttpPostWithResponse(target_url, req_body, resp_str, 90000))
+     {
+      Print("[MOBIUS ERROR] Gọi cầu nối Mobius thất bại. Sẽ thử lại ở chu kỳ đóng nến sau.");
+      return false;
+     }
+
+   ParseAndLoadScenarioJson(resp_str);
+   if(g_scenarios_count > 0)
+     {
+      Print(StringFormat("=> [MOBIUS LOADED] Đã nạp thành công %d kịch bản từ Mobius vào bộ nhớ hiện tại của EA (Signal ID: %s)!", g_scenarios_count, g_current_signal_id));
+      UpdateChartDashboard();
+     }
+   else
+     {
+      Print("=> [MOBIUS NOTICE] Cầu nối Mobius không trả về kịch bản nào khả thi lúc này.");
+     }
+   return (g_scenarios_count > 0);
+  }
+
+//+------------------------------------------------------------------+
+//| Kiểm tra đóng nến chu kỳ (mặc định 2h) để gọi cầu nối Mobius     |
+//+------------------------------------------------------------------+
+void CheckMobiusBridgeOnBarClose()
+  {
+   if(!InpUseMobiusBridge || InpMobiusFetchIntervalHours <= 0) return;
+   if(IsDayStopped() || IsInLossCooldown() || HasOpenPositions() || g_is_trading) return;
+
+   // Chỉ gọi khi KHÔNG CÓ kịch bản hoặc toàn bộ kịch bản đã kết thúc/hết hạn
+   if(g_scenarios_count > 0 && !IsAllScenariosFinished()) return;
+
+   ENUM_TIMEFRAMES mobius_tf = HoursToTimeframe(InpMobiusFetchIntervalHours);
+   datetime current_bar_time = iTime(_Symbol, mobius_tf, 0);
+   if(current_bar_time == 0) return;
+
+   if(g_last_mobius_bar_time == 0)
+     {
+      g_last_mobius_bar_time = current_bar_time;
+      return;
+     }
+
+   // Phát hiện nến mới mở trên khung mobius_tf (tức là nến chu kỳ trước vừa đóng cửa!)
+   if(current_bar_time != g_last_mobius_bar_time)
+     {
+      g_last_mobius_bar_time = current_bar_time;
+
+      // Giãn cách an toàn tối thiểu
+      if(g_last_mobius_call_time > 0 && (TimeCurrent() - g_last_mobius_call_time < InpMobiusFetchIntervalHours * 3600 - 60))
+        {
+         return;
+        }
+
+      Print(StringFormat("=> [MOBIUS TRIGGER] Nến %s (%d giờ) vừa đóng cửa. Hiện tại chưa có kịch bản. Đang gọi cầu nối Mobius API...",
+            TimeframeToString(mobius_tf), InpMobiusFetchIntervalHours));
+
+      if(FetchMobiusScenariosFromBridge())
+        {
+         g_last_mobius_call_time = TimeCurrent();
+         g_last_plan_request_time = TimeCurrent();
+         Print("=> [MOBIUS TRIGGER SUCCESS] Đã nạp thành công kịch bản từ Mobius RAG!");
+        }
+     }
   }
 
 //+------------------------------------------------------------------+
