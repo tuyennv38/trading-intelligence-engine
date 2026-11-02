@@ -19,7 +19,7 @@
         "CLICKHOUSE_LOG_URI": "Host=gsmdev.cscmobicorp.com;Port=8123;Username=rootadmin;Password=cscDbDev2015;Database=gsm_analytics",
         "AiProvider__BaseUrl": "https://9router.cscmobicorp.com/v1",
         "AiProvider__ApiKey": "sk-7ba9b50455a397c2-9ul9a1-a4689e2b",
-        "AiProvider__Model": "ag/gemini-3.1-pro-low",
+        "AiProvider__Model": "ag/gemini-3.8-flash-low",
         "Notification__Provider": "GoogleChat",
         "Notification__GoogleChatWebhookUrl": "https://chat.googleapis.com/v1/spaces/AAQA9xSV-40/messages?key=AIzaSyDdI0hCZtE6vySjMm-WEfRq3CPzqKqqsHI&token=HYgZ84bh_GYiYW9fnOWwI1QGvCKzyPbrP2AnKSlGUCc"
       }
@@ -34,7 +34,7 @@
         "CLICKHOUSE_LOG_URI": "Host=gsmdev.cscmobicorp.com;Port=8123;Username=rootadmin;Password=cscDbDev2015;Database=gsm_analytics",
         "AiProvider__BaseUrl": "https://9router.cscmobicorp.com/v1",
         "AiProvider__ApiKey": "sk-7ba9b50455a397c2-9ul9a1-a4689e2b",
-        "AiProvider__Model": "ag/gemini-3.1-pro-low",
+        "AiProvider__Model": "ag/gemini-3.8-flash-low",
         "Notification__Provider": "GoogleChat",
         "Notification__GoogleChatWebhookUrl": "https://chat.googleapis.com/v1/spaces/AAQA9xSV-40/messages?key=AIzaSyDdI0hCZtE6vySjMm-WEfRq3CPzqKqqsHI&token=HYgZ84bh_GYiYW9fnOWwI1QGvCKzyPbrP2AnKSlGUCc"
       }

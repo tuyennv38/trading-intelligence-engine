@@ -39,6 +39,7 @@ input int    InpBreakevenOffset  = 20;               // Bù trừ hòa vốn (Po
 input int    InpCheckScenarioSec = 60;               // Thời gian gọi API kiểm tra kịch bản mới (giây) - Mặc định 60s (1 phút)
 input int    InpMaxConfirmBars   = 8;                // Tối đa nến confirm sau khi giá vào zone (REVERSAL). 0 = không giới hạn
 input int    InpMaxRetestBars    = 12;               // Tối đa nến retest sau khi phá (BREAKOUT). 0 = không giới hạn
+input bool   InpReversalConfirmOnly = true;          // Reversal: Chỉ vào 100% vol khi có nến confirm (Tắt vào 50% ở giữa zone)
 
 //--- Quản lý Chốt lời Bậc thang & Thoát sớm (2 TP + Early BE + Reversal Exit) ---
 input bool   InpEnableSmallTfExit       = true;      // Thoát sạch lệnh khi nến khung nhỏ đảo chiều trước khi tới TP2
@@ -121,6 +122,7 @@ struct Scenario {
     int                  retest_patterns_count;
     
     ENUM_SCENARIO_STATUS status;
+    bool                 zone_touched;         // giá đã từng chạm/vào vùng entry_zone
     bool                 ready_to_confirm;
     bool                 breakout_confirmed;   // nến confirm đã đóng phá trigger
     bool                 retest_touched;       // giá đã hồi chạm lại trigger
@@ -463,6 +465,14 @@ void UpdateChartDashboard()
      {
       info += StringFormat("Thời gian nghỉ sau SL: %d phút (Tránh nhồi lệnh liên tục)\n", InpLossCooldownMinutes);
      }
+   if(InpReversalConfirmOnly)
+     {
+      info += "Reversal Mode: Chỉ vào 100% khi có nến Confirm (Tắt vào 50% giữa zone)\n";
+     }
+   else
+     {
+      info += "Reversal Mode: Dual-entry (50% giữa zone + 50% nến confirm)\n";
+     }
 
    if(g_scenarios_count > 0)
      {
@@ -474,6 +484,15 @@ void UpdateChartDashboard()
          if(g_is_trading && g_active_scenario_index == i)
            {
             st_str = "🔥 ĐANG VÀO LỆNH (IN TRADE)";
+           }
+         else if(g_scenarios[i].status == PENDING)
+           {
+            if(g_scenarios[i].ready_to_confirm)
+               st_str = "⏳ ĐÃ VÀO ZONE - CHỜ CONFIRM";
+            else if(g_scenarios[i].breakout_confirmed)
+               st_str = "⏳ ĐÃ PHÁ VỠ - CHỜ RETEST";
+            else
+               st_str = "⏳ CHỜ GIÁ TIẾP CẬN VÙNG (PENDING)";
            }
          
          string name_display = (StringLen(g_scenarios[i].name) > 0) ? g_scenarios[i].name : g_scenarios[i].id;
@@ -1402,6 +1421,7 @@ void ParseAndLoadScenarioJson(string json_str)
       if(st == "PENDING") g_scenarios[i].status = PENDING;
       else g_scenarios[i].status = EXPIRED;
       
+      g_scenarios[i].zone_touched = false;
       g_scenarios[i].ready_to_confirm = false;
       g_scenarios[i].breakout_confirmed = false;
       g_scenarios[i].retest_touched = false;
@@ -1819,26 +1839,79 @@ bool CheckInvalidation(int index, double bid, double ask) {
 
 //+------------------------------------------------------------------+
 //| Check Missed Opportunity (Giá chạm TP1 mà chưa vào lệnh)         |
+//| QUY TẮC AN TOÀN TRÁNH EXPIRED NHẦM:                              |
+//| 1. Nếu đã khớp lệnh (half hoặc full) -> Không check missed       |
+//| 2. REVERSAL: Giá BẮT BUỘC phải ĐÃ TỪNG CHẠM VÀO ENTRY ZONE trước |
+//|    mới được tính là bỏ lỡ cơ hội. Nếu giá chưa từng về zone      |
+//|    (đang chờ pullback/retrace) -> Tuyệt đối không expire!        |
+//| 3. BREAKOUT: Giá BẮT BUỘC phải ĐÃ XÁC NHẬN PHÁ VỠ (confirmed)    |
+//|    sau đó chạy thẳng tới TP1 mà không chịu retest.               |
 //+------------------------------------------------------------------+
 bool CheckMissedOpportunity(int index, double bid, double ask) {
     if(g_scenarios[index].tps_count == 0) return false;
+    if(g_scenarios[index].filled_lots > 0.0 || g_scenarios[index].reversal_mid_filled) return false;
     
     double tp1 = g_scenarios[index].tps[0];
+    if(tp1 <= 0.0) return false;
+    
     ENUM_SCENARIO_TYPE type = g_scenarios[index].type;
+
+    // --- 1. REVERSAL: Kiểm tra đã chạm Entry Zone chưa ---
+    if(type == REVERSAL_BUY || type == REVERSAL_SELL) {
+        double min_z = g_scenarios[index].entry_min;
+        double max_z = g_scenarios[index].entry_max;
+
+        // Cập nhật zone_touched khi giá chạm vào vùng entry_zone
+        if(!g_scenarios[index].zone_touched) {
+            if(type == REVERSAL_BUY) {
+                // BUY: Giá chạm từ trên xuống hoặc đang nằm trong/dưới đỉnh zone
+                if(ask <= max_z) {
+                    g_scenarios[index].zone_touched = true;
+                }
+            } else { // REVERSAL_SELL
+                // SELL: Giá chạm từ dưới lên hoặc đang nằm trong/trên đáy zone
+                if(bid >= min_z) {
+                    g_scenarios[index].zone_touched = true;
+                }
+            }
+        }
+
+        // Nếu giá CHƯA TỪNG CHẠM VÀO ZONE và chưa kích hoạt confirm -> Vẫn đang chờ giá về, KHÔNG EXPIRE!
+        if(!g_scenarios[index].zone_touched && !g_scenarios[index].ready_to_confirm) {
+            return false;
+        }
+
+        // Đã từng chạm zone nhưng sau đó giá bật mạnh tới TP1 mà không khớp lệnh
+        bool missed = false;
+        if(type == REVERSAL_BUY && ask >= tp1) missed = true;
+        else if(type == REVERSAL_SELL && bid <= tp1) missed = true;
+
+        if(missed) {
+            g_scenarios[index].status = EXPIRED;
+            Print(StringFormat("Kịch bản [%s] bị EXPIRED: Giá đã chạm Entry Zone [%.3f - %.3f] nhưng sau đó bật thẳng tới TP1 (%.3f) mà không khớp lệnh (Bỏ lỡ cơ hội).",
+                  g_scenarios[index].id, min_z, max_z, tp1));
+            return true;
+        }
+    }
+    // --- 2. BREAKOUT: Kiểm tra đã phá vỡ trigger chưa ---
+    else if(type == BREAKOUT_BUY || type == BREAKOUT_SELL) {
+        // Chỉ tính bỏ lỡ cơ hội KHI NẾN ĐÃ XÁC NHẬN PHÁ VỠ TRIGGER, sau đó bay thẳng tới TP1 không retest
+        if(!g_scenarios[index].breakout_confirmed) {
+            return false;
+        }
+
+        bool missed = false;
+        if(type == BREAKOUT_BUY && ask >= tp1) missed = true;
+        else if(type == BREAKOUT_SELL && bid <= tp1) missed = true;
+
+        if(missed) {
+            g_scenarios[index].status = EXPIRED;
+            Print(StringFormat("Kịch bản [%s] bị EXPIRED: Giá đã xác nhận Breakout Trigger (%.3f) nhưng phóng thẳng tới TP1 (%.3f) không retest (Bỏ lỡ cơ hội).",
+                  g_scenarios[index].id, g_scenarios[index].trigger_price, tp1));
+            return true;
+        }
+    }
     
-    bool missed = false;
-    if(type == REVERSAL_SELL || type == BREAKOUT_SELL) {
-        if(tp1 > 0 && bid <= tp1) missed = true;
-    }
-    else if(type == REVERSAL_BUY || type == BREAKOUT_BUY) {
-        if(tp1 > 0 && ask >= tp1) missed = true;
-    }
-    
-    if(missed) {
-        g_scenarios[index].status = EXPIRED;
-        Print("Kịch bản [", g_scenarios[index].id, "] bị EXPIRED vì giá đã chạm TP1 (", DoubleToString(tp1, _Digits), ") mà không có tín hiệu vào lệnh (Bỏ lỡ cơ hội).");
-        return true;
-    }
     return false;
 }
 
@@ -2381,11 +2454,82 @@ void ProcessReversalScenario(int index, double bid, double ask) {
     ENUM_TIMEFRAMES tf = g_scenarios[index].confirm_timeframe;
     double mid = (min_z + max_z) / 2.0;
 
+    // =====================================================================
+    // CHẾ ĐỘ 1: CHỈ VÀO LỆNH KHI CÓ NẾN XÁC NHẬN (InpReversalConfirmOnly = true)
+    // KHÔNG VÀO NỬA VOL KHI GIÁ Ở GIỮA ZONE
+    // =====================================================================
+    if(InpReversalConfirmOnly)
+      {
+       // Giai đoạn 1: Chờ giá tiếp cận / chạm vào vùng Entry Zone
+       if(!g_scenarios[index].ready_to_confirm)
+         {
+          bool touched = false;
+          if(is_buy)
+            {
+             if(ask <= max_z && bid >= (min_z - ZonePad(min_z, max_z)))
+                touched = true;
+            }
+          else
+            {
+             if(bid >= min_z && ask <= (max_z + ZonePad(min_z, max_z)))
+                touched = true;
+            }
+
+          if(!touched && !PriceTaggedZone(tf, min_z, max_z, bid, ask))
+             return;
+
+          g_scenarios[index].zone_touched = true;
+          g_scenarios[index].ready_to_confirm = true;
+          g_scenarios[index].confirm_wait_bars = 0;
+          g_scenarios[index].last_bar_time = iTime(_Symbol, tf, 0);
+          Print(StringFormat("Kịch bản Reversal [%s] giá đã vào Entry Zone [%.3f - %.3f]. Bắt đầu theo dõi nến xác nhận trên khung %s...",
+                g_scenarios[index].id, min_z, max_z, TimeframeToString(tf)));
+          return;
+         }
+
+       // Giai đoạn 2: Theo dõi nến xác nhận sau khi đã vào zone
+       if(!IsNewBar(index))
+          return;
+
+       g_scenarios[index].confirm_wait_bars++;
+       if(InpMaxConfirmBars > 0 && g_scenarios[index].confirm_wait_bars > InpMaxConfirmBars)
+         {
+          g_scenarios[index].status = EXPIRED;
+          Print(StringFormat("Kịch bản Reversal [%s] EXPIRED: Quá %d nến %s sau khi vào zone mà không có nến xác nhận hợp lệ.",
+                g_scenarios[index].id, InpMaxConfirmBars, TimeframeToString(tf)));
+          return;
+         }
+
+       if(!CandleReactedFromZone(tf, min_z, max_z, is_buy))
+         {
+          Print(StringFormat("Reversal [%s] nến confirm đóng không phản ứng gần zone (pad=%.3f). Chờ nến %s tiếp theo.",
+                g_scenarios[index].id, ZonePad(min_z, max_z), TimeframeToString(tf)));
+          return;
+         }
+
+       if(!ConfirmPatternOrDirection(tf, g_scenarios[index].confirm_patterns,
+                                     g_scenarios[index].patterns_count, is_buy))
+         {
+          Print(StringFormat("Reversal [%s] nến gần zone nhưng chưa thỏa mãn pattern/nến thuận chiều. Chờ nến %s tiếp theo.",
+                g_scenarios[index].id, TimeframeToString(tf)));
+          return;
+         }
+
+       Print(StringFormat("===> [REVERSAL CONFIRMED] Kịch bản [%s] ĐÃ CÓ NẾN XÁC NHẬN HỢP LỆ trên %s! Vào 100%% volume...",
+             g_scenarios[index].id, TimeframeToString(tf)));
+       ExecuteTradeWave(index, "FULL");
+       return;
+      }
+
+    // =====================================================================
+    // CHẾ ĐỘ 2: DUAL-ENTRY CŨ (Vào 50% ở giữa zone + 50% khi confirm)
+    // =====================================================================
     if(!g_scenarios[index].reversal_mid_filled)
       {
        if(!PriceTouchedMid(tf, min_z, max_z, bid, ask, is_buy))
           return;
 
+       g_scenarios[index].zone_touched = true;
        g_scenarios[index].ready_to_confirm = true;
        g_scenarios[index].confirm_wait_bars = 0;
        g_scenarios[index].last_bar_time = iTime(_Symbol, tf, 0);

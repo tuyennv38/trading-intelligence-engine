@@ -25,6 +25,7 @@ using TradingIntelligenceEngine.Signal.Notifications;
 using Hangfire;
 using Hangfire.MemoryStorage;
 using TradingIntelligenceEngine.Api.Jobs;
+using TradingIntelligenceEngine.Api.Services;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -79,6 +80,10 @@ var mobiusOptions = new MobiusOptions();
 builder.Configuration.GetSection("Mobius").Bind(mobiusOptions);
 builder.Services.AddSingleton(mobiusOptions);
 
+var breakoutOptions = new BreakoutOptions();
+builder.Configuration.GetSection("BreakoutSync").Bind(breakoutOptions);
+builder.Services.AddSingleton(breakoutOptions);
+
 // 2. Register domain & application services
 builder.Services.AddTransient<ISwingDetector, SwingDetector>();
 builder.Services.AddTransient<IStructureAnalyzer, StructureAnalyzer>();
@@ -102,7 +107,11 @@ builder.Services.AddTransient<IBacktestEngine, BacktestEngine>();
 builder.Services.AddHttpClient<IAiDecisionEngine, LlmDecisionEngine>();
 builder.Services.AddHttpClient<ITradingStrategistEngine, LlmTradingStrategistEngine>();
 builder.Services.AddHttpClient<IAiMarketStructureEngine, LlmMarketStructureEngine>();
+builder.Services.AddHttpClient<IAiBreakoutEngine, LlmBreakoutEngine>();
 builder.Services.AddHttpClient<IMobiusStrategyService, TradingIntelligenceEngine.Api.Services.MobiusStrategyService>();
+builder.Services.AddHttpClient<IMobiusKlinesClient, MobiusKlinesClient>();
+builder.Services.AddTransient<IBreakoutPatternService, BreakoutPatternService>();
+builder.Services.AddHostedService<BreakoutMonitoringHostedService>();
 
 // 3. Register Notification Service
 var notificationProvider = builder.Configuration["Notification:Provider"];

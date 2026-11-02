@@ -482,3 +482,20 @@ $RECYCLE.BIN/
 
 # Vim temporary swap files
 *.swp
+
+# MetaTrader 5 compiled files and user data
+*.ex5
+*.ex4
+*.dat
+MQL5/Experts/AI_Trading_Bot/
+MQL5/Experts/Advisors/
+MQL5/Experts/Examples/
+MQL5/Experts/ExportMarketData.mq5
+MQL5/Experts/Free Robots/
+MQL5/Files/
+MQL5/Images/
+MQL5/Profiles/
+MQL5/Include/
+MQL5/Indicators/
+MQL5/Scripts/
+
