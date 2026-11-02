@@ -107,7 +107,10 @@ builder.Services.AddTransient<IBacktestEngine, BacktestEngine>();
 builder.Services.AddHttpClient<IAiDecisionEngine, LlmDecisionEngine>();
 builder.Services.AddHttpClient<ITradingStrategistEngine, LlmTradingStrategistEngine>();
 builder.Services.AddHttpClient<IAiMarketStructureEngine, LlmMarketStructureEngine>();
-builder.Services.AddHttpClient<IAiBreakoutEngine, LlmBreakoutEngine>();
+builder.Services.AddHttpClient<IAiBreakoutEngine, LlmBreakoutEngine>(client =>
+{
+    client.Timeout = TimeSpan.FromSeconds(120);
+});
 builder.Services.AddHttpClient<IMobiusStrategyService, TradingIntelligenceEngine.Api.Services.MobiusStrategyService>();
 builder.Services.AddHttpClient<IMobiusKlinesClient, MobiusKlinesClient>();
 builder.Services.AddTransient<IBreakoutPatternService, BreakoutPatternService>();

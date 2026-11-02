@@ -76,10 +76,12 @@ public class BreakoutPatternService : IBreakoutPatternService
         var atr = IndicatorMath.CalculateAtr(candles, 14);
         if (atr <= 0) atr = 2.0m;
 
-        // 1. Dò tìm điểm xoay (Swing Highs / Swing Lows)
+        // 1. Dò tìm điểm xoay (Swing Highs / Swing Lows) - giới hạn 60 nến gần nhất để bám sát vùng giá hiện tại
+        var recentCutoffIndex = Math.Max(0, candles.Count - 60);
         var swings = _swingDetector.Detect(candles, _swingOptions);
-        var swingHighs = swings.Where(s => s.Type == SwingType.High).OrderBy(s => s.Index).ToList();
-        var swingLows = swings.Where(s => s.Type == SwingType.Low).OrderBy(s => s.Index).ToList();
+        var recentSwings = swings.Where(s => s.Index >= recentCutoffIndex).ToList();
+        var swingHighs = recentSwings.Where(s => s.Type == SwingType.High).OrderBy(s => s.Index).ToList();
+        var swingLows = recentSwings.Where(s => s.Type == SwingType.Low).OrderBy(s => s.Index).ToList();
 
         var result = new PatternRecognitionResult
         {
@@ -90,10 +92,10 @@ public class BreakoutPatternService : IBreakoutPatternService
             CandleCount = candles.Count
         };
 
-        // 2. Phân tích các vùng biên (Support & Resistance)
+        // 2. Phân tích các vùng biên (Support & Resistance) bám sát theo giá hiện tại
         var tolerance = atr * 0.4m;
-        var (resZone, resTouches) = ClusterSwings(swingHighs.Select(s => s.Price).ToList(), tolerance);
-        var (supZone, supTouches) = ClusterSwings(swingLows.Select(s => s.Price).ToList(), tolerance);
+        var (resZone, resTouches) = ClusterSwings(swingHighs.Select(s => s.Price).ToList(), currentPrice, isResistance: true, tolerance: tolerance);
+        var (supZone, supTouches) = ClusterSwings(swingLows.Select(s => s.Price).ToList(), currentPrice, isResistance: false, tolerance: tolerance);
 
         result.Zones.Resistance = new BoundaryZone
         {
@@ -510,6 +512,8 @@ public class BreakoutPatternService : IBreakoutPatternService
 
         var hasAiConfig = !string.IsNullOrWhiteSpace(_aiProviderOptions?.Snapshot().BaseUrl);
         BreakoutScenarioResult? scenarioResult = null;
+        string engineMode = (effPatternMode == "AI" && effScenarioMode == "AI") ? "AI" : $"{effPatternMode}+{effScenarioMode}";
+        string? fallbackReason = null;
 
         // 3. Điều phối theo cấu hình PatternMode & ScenarioMode:
         // TRƯỜNG HỢP 1: Cả hai đều dùng AI ("AI" + "AI")
@@ -524,7 +528,8 @@ public class BreakoutPatternService : IBreakoutPatternService
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogWarning(ex, "Gọi AI thất bại. Chuyển sang fallback Định lượng...");
+                    fallbackReason = ex.Message;
+                    _logger.LogWarning(ex, "Gọi AI thất bại ({Message}). Chuyển sang fallback Định lượng...", ex.Message);
                 }
             }
         }
@@ -541,7 +546,8 @@ public class BreakoutPatternService : IBreakoutPatternService
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogWarning(ex, "AI lập kịch bản thất bại. Chuyển sang fallback Thuật toán lập kịch bản...");
+                    fallbackReason = ex.Message;
+                    _logger.LogWarning(ex, "AI lập kịch bản thất bại ({Message}). Chuyển sang fallback Thuật toán lập kịch bản...", ex.Message);
                 }
             }
 
@@ -563,7 +569,8 @@ public class BreakoutPatternService : IBreakoutPatternService
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogWarning(ex, "AI nhận diện thất bại. Chuyển sang Thuật toán Quant hoàn toàn...");
+                    fallbackReason = ex.Message;
+                    _logger.LogWarning(ex, "AI nhận diện thất bại ({Message}). Chuyển sang Thuật toán Quant hoàn toàn...", ex.Message);
                 }
             }
         }
@@ -571,6 +578,14 @@ public class BreakoutPatternService : IBreakoutPatternService
         // TRƯỜNG HỢP 4 hoặc Fallback: 100% Thuật toán Định lượng Quant ("QUANT" + "QUANT")
         if (scenarioResult == null)
         {
+            if (!string.IsNullOrEmpty(fallbackReason))
+            {
+                engineMode = "QUANT (FALLBACK DO AI LỖI)";
+            }
+            else
+            {
+                engineMode = "QUANT";
+            }
             _logger.LogInformation("Thực thi 100% bằng Thuật toán Định lượng C# (Geometry Quant Algorithm)...");
             var patternResult = await RecognizePatternAsync(symbol, interval.ToUpperInvariant(), domainCandles, cancellationToken);
             scenarioResult = await PlanBreakoutScenarioAsync(patternResult, domainCandles, riskVal, cancellationToken);
@@ -579,13 +594,13 @@ public class BreakoutPatternService : IBreakoutPatternService
         // 4. Lưu TradingPlanResponse vào Store
         await _marketDataStore.SetLatestPlanAsync(symbol, scenarioResult.TradingPlan);
 
-        _logger.LogInformation("Hoàn tất lập kịch bản Breakout cho {Symbol}. Primary Pattern: {Pattern} ({Status}).",
-            symbol, scenarioResult.PatternRecognition.PrimaryPattern.Name, scenarioResult.PatternRecognition.PrimaryPattern.Status);
+        _logger.LogInformation("Hoàn tất lập kịch bản Breakout cho {Symbol}. Primary Pattern: {Pattern} ({Status}). Động cơ: {Mode}",
+            symbol, scenarioResult.PatternRecognition.PrimaryPattern.Name, scenarioResult.PatternRecognition.PrimaryPattern.Status, engineMode);
 
         // 5. Gửi thông báo nếu có cấu hình
         if (notify && _notifier != null && _options.NotifyOnScan)
         {
-            var message = FormatGoogleChatMessage(scenarioResult);
+            var message = FormatGoogleChatMessage(scenarioResult, engineMode, fallbackReason);
             try
             {
                 await _notifier.SendMessageAsync(message);
@@ -599,14 +614,29 @@ public class BreakoutPatternService : IBreakoutPatternService
         return scenarioResult;
     }
 
-    private static (Tuple<decimal?, decimal?>, int) ClusterSwings(List<decimal> prices, decimal tolerance)
+    private static (Tuple<decimal?, decimal?>, int) ClusterSwings(
+        List<decimal> prices,
+        decimal currentPrice,
+        bool isResistance,
+        decimal tolerance)
     {
         if (prices.Count == 0) return (Tuple.Create<decimal?, decimal?>(null, null), 0);
-        if (prices.Count == 1) return (Tuple.Create<decimal?, decimal?>(prices[0], prices[0]), 1);
 
-        // Tìm cụm giá có mật độ chạm nhiều nhất
+        // Lọc các swing point theo đúng phía so với giá hiện tại:
+        // - Kháng cự: phải nằm ở trên hoặc quanh giá hiện tại (không lấy cản quá xa bên dưới)
+        // - Hỗ trợ: phải nằm ở dưới hoặc quanh giá hiện tại (không lấy hỗ trợ quá xa bên trên)
+        var filteredPrices = isResistance
+            ? prices.Where(p => p >= currentPrice - tolerance).ToList()
+            : prices.Where(p => p <= currentPrice + tolerance).ToList();
+
+        if (filteredPrices.Count == 0)
+        {
+            var nearest = prices.OrderBy(p => Math.Abs(p - currentPrice)).First();
+            filteredPrices = new List<decimal> { nearest };
+        }
+
         var clusters = new List<List<decimal>>();
-        foreach (var p in prices)
+        foreach (var p in filteredPrices)
         {
             var added = false;
             foreach (var c in clusters)
@@ -625,7 +655,12 @@ public class BreakoutPatternService : IBreakoutPatternService
             }
         }
 
-        var bestCluster = clusters.OrderByDescending(c => c.Count).First();
+        // Chọn cụm tốt nhất: ưu tiên cụm gần giá hiện tại nhất và có mật độ chạm cao
+        var bestCluster = clusters
+            .OrderBy(c => Math.Abs(c.Average() - currentPrice))
+            .ThenByDescending(c => c.Count)
+            .First();
+
         return (Tuple.Create<decimal?, decimal?>(bestCluster.Min(), bestCluster.Max()), bestCluster.Count);
     }
 
@@ -661,7 +696,7 @@ public class BreakoutPatternService : IBreakoutPatternService
         return sb.ToString();
     }
 
-    private static string FormatGoogleChatMessage(BreakoutScenarioResult result)
+    private static string FormatGoogleChatMessage(BreakoutScenarioResult result, string mode, string? fallbackReason = null)
     {
         var p = result.PatternRecognition;
         var plan = result.TradingPlan;
@@ -669,6 +704,11 @@ public class BreakoutPatternService : IBreakoutPatternService
 
         var sb = new StringBuilder();
         sb.AppendLine("⚡ *[BREAKOUT PATTERN SCANNER]*");
+        sb.AppendLine($"🤖 Động cơ: *{mode}*");
+        if (!string.IsNullOrEmpty(fallbackReason))
+        {
+            sb.AppendLine($"⚠️ _Lưu ý: AI phản hồi chậm/lỗi ({fallbackReason}), hệ thống tạm chuyển sang Quant để không gián đoạn._");
+        }
         sb.AppendLine($"⏰ {now:dd/MM/yyyy HH:mm:ss} (UTC+7)");
         var displayAtr = p.Atr > 0 ? p.Atr : 2.5m;
         sb.AppendLine($"📌 *{p.Symbol} ({p.Timeframe})* | Giá: *{p.CurrentPrice:F2}* | ATR: *{displayAtr:F2}*");
