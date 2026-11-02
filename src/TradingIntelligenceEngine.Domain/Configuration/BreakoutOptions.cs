@@ -14,6 +14,12 @@ public sealed class BreakoutOptions
     public bool NotifyOnScan { get; set; } = true;
 
     /// <summary>
+    /// Tự động quét và lập kịch bản ngay khi chương trình khởi động.
+    /// Mặc định = false: Ban đầu chưa tạo kịch bản nào, chỉ tạo khi có scan và gửi lên các thông số từ API / EA.
+    /// </summary>
+    public bool ScanOnStartup { get; set; } = false;
+
+    /// <summary>
     /// Chế độ nhận diện cấu trúc mô hình:
     /// - "AI": Dùng AI đọc nến và áp dụng Skill pattern-recognition.
     /// - "Quant" (hoặc "Algorithm"): Dùng 100% thuật toán định lượng hình học C#.

@@ -43,8 +43,16 @@ public class BreakoutMonitoringHostedService : BackgroundService
         // Đợi 2 giây để Web server và DI container khởi động hoàn toàn
         await Task.Delay(2000, stoppingToken);
 
-        // 1. Chạy ngay lần đầu tiên lúc khởi động chương trình
-        await ExecuteScanSafelyAsync(stoppingToken);
+        // 1. Chỉ quét lần đầu tiên lúc khởi động nếu ScanOnStartup = true
+        if (_options.ScanOnStartup)
+        {
+            _logger.LogInformation("BreakoutMonitoringHostedService: ScanOnStartup = true. Thực hiện quét ngay lúc khởi động...");
+            await ExecuteScanSafelyAsync(stoppingToken);
+        }
+        else
+        {
+            _logger.LogInformation("BreakoutMonitoringHostedService: ScanOnStartup = false. Chưa thiết lập kịch bản ban đầu, chờ lệnh Scan và thông số từ EA / API.");
+        }
 
         // 2. Chạy lặp lại định kỳ mỗi 15 phút
         using var timer = new PeriodicTimer(TimeSpan.FromMinutes(intervalMinutes));
