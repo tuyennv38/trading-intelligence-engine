@@ -27,37 +27,50 @@ Nhiệm vụ của bạn là thực thi tuần tự 2 bộ Kỹ năng chuyên s�
 ==================================================
 PHẦN 1: QUY TẮC NHẬN DIỆN MÔ HÌNH (PATTERN-RECOGNITION SKILL)
 ==================================================
-1. Dò tìm điểm xoay (Swing Highs & Swing Lows) và đếm số lần chạm độc lập:
-   - 1 lần chạm: chỉ là điểm quan sát ban đầu.
-   - 2 lần chạm độc lập: cấu trúc tiềm năng (POTENTIAL).
-   - Từ 3 lần chạm trở lên: cấu trúc được xác nhận (CONFIRMED).
-2. Phân loại cấu trúc theo 4 nhóm bắt buộc:
-   - Nhóm A (Horizontal): RECTANGLE (biên trên/dưới ngang), DOUBLE_TOP / MULTIPLE_TOP, DOUBLE_BOTTOM / MULTIPLE_BOTTOM, HORIZONTAL_LEVELS.
-   - Nhóm B (Triangle): SYMMETRICAL_TRIANGLE (Lower Highs + Higher Lows), ASCENDING_TRIANGLE (Kháng cự phẳng + Đáy nâng cao), DESCENDING_TRIANGLE (Hỗ trợ phẳng + Đỉnh hạ thấp).
+
+1. ĐỊNH NGHĨA CHUẨN VỀ ĐIỂM CHẠM ĐỘC LẬP (INDEPENDENT TOUCH):
+   - Điểm chạm là ĐỈNH SÓNG hoặc ĐÁY SÓNG (Swing High/Low) hoàn chỉnh, TUYỆT ĐỐI KHÔNG PHẢI LÀ NẾN ĐƠN LẺ.
+   - Các cây nến đứng cạnh nhau hoặc chỉ cách nhau 1-2 nến tại cùng vùng giá chỉ được tính là 1 LẦN CHẠM DUY NHẤT (Nhiễu nến trong 1 nhịp).
+   - ĐIỀU KIỆN TẠO SÓNG BẮT BUỘC: Giữa 2 lần chạm cùng một biên (ví dụ giữa Đỉnh 1 và Đỉnh 2), bắt buộc phải có một con sóng đối nghịch tách biệt (Retracement Wave):
+     + Kéo dài tối thiểu từ 3 đến 5 cây nến trở lên.
+     + Biên độ lùi giá tối thiểu phải đạt >= 1.5 * ATR (khoảng 5 - 8 giá đối với XAUUSD).
+     + Phải tạo thành một Swing Point đối ứng rõ rệt ở giữa (có Đáy thung lũng giữa 2 Đỉnh, hoặc có Đỉnh nhô lên giữa 2 Đáy).
+
+2. QUY TẮC 3 GIAI ĐOẠN ĐỂ XÁC NHẬN CẢN:
+   - Lần chạm 1 (Origin): Điểm hình thành ban đầu của sóng, CHƯA có giá trị kỹ thuật.
+   - Lần chạm 2 (Validation): Giá quay lại test mốc của Lần 1 và có phản ứng đảo chiều rõ rệt. ĐƯỜNG BIÊN / CẢN CHÍNH THỨC ĐƯỢC XÁC LẬP.
+   - Lần chạm 3+ (Action Trigger): Lực nén đã tích tụ đủ sau ít nhất 2 nhịp sóng kiểm định. LẦN CHẠM THỨ 3 MỚI LÀ THỜI ĐIỂM ĐỦ ĐIỀU KIỆN ĐỂ KÍCH HOẠT BREAKOUT!
+
+3. PHÂN LOẠI CẤU TRÚC THEO 4 NHÓM:
+   - Nhóm A (Horizontal): RECTANGLE (ít nhất 2 đỉnh ngang VÀ 2 đáy ngang tách biệt), DOUBLE_TOP / MULTIPLE_TOP (2-3 đỉnh có đáy neckline ở giữa), DOUBLE_BOTTOM / MULTIPLE_BOTTOM.
+   - Nhóm B (Triangle): SYMMETRICAL_TRIANGLE (Lower Highs + Higher Lows hội tụ), ASCENDING_TRIANGLE (Kháng cự phẳng >= 2 lần chạm + Đáy nâng cao HL >= 2 lần chạm), DESCENDING_TRIANGLE (Hỗ trợ phẳng + Đỉnh hạ thấp LH).
    - Nhóm C (Trendline & Channel): RISING_WEDGE, FALLING_WEDGE, ASCENDING_CHANNEL, DESCENDING_CHANNEL.
-   - Nhóm D (Continuation): BULL_FLAG (sóng tăng mạnh trước đó + nén tích lũy), BEAR_FLAG (sóng giảm mạnh trước đó + nén tích lũy).
-3. Quy tắc chống nhận diện sai:
-   - Không kết luận cản mạnh từ 1 đỉnh/đáy đơn lẻ.
-   - Không gọi Range là Triangle nếu 2 cạnh không hội tụ.
-   - Không gọi Flag nếu không có impulse leg mạnh trước đó.
-   - Nếu chưa rõ ràng, đặt trạng thái 'DEVELOPING' hoặc 'NOT_FOUND'.
+   - Nhóm D (Continuation): BULL_FLAG (sóng tăng mạnh trước đó + nén tích lũy >= 2 sóng nhỏ), BEAR_FLAG (sóng giảm mạnh trước đó + nén tích lũy >= 2 sóng nhỏ).
+
+4. BỘ LỌC CẤM KỴ TUYỆT ĐỐI (NEGATIVE CONSTRAINTS):
+   - CẤM BẮT BREAKOUT TẠI NHỊP HỒI (PULLBACK) TRONG SÓNG ĐẨY MẠNH: Nếu thị trường vừa có chuỗi nến tăng/giảm dốc đứng rồi có 1 nhịp hồi (ví dụ 1-2 cây nến đỏ rơi xuống tạo đáy tạm thời), đó là PULLBACK / RETRACEMENT, TUYỆT ĐỐI KHÔNG ĐƯỢC COI LÀ BREAKDOWN / BREAKOUT.
+   - CẤM ĐẶT CẢN TỪ 1 ĐỈNH/ĐÁY ĐƠN LẺ: Nếu vùng giá chỉ mới có 1 lần chạm (chưa có nhịp sóng thứ 2 test lại), đó KHÔNG PHẢI LÀ MÔ HÌNH.
+   - NẾU CHƯA ĐỦ CẤU TRÚC 2 LẦN CHẠM: Bắt buộc đặt `primary_pattern.name = ""NO_CLEAR_STRUCTURE""`, `status = ""NOT_FOUND""` hoặc `""DEVELOPING""`.
 
 ==================================================
 PHẦN 2: QUY TẮC LẬP KỊCH BẢN BREAKOUT (BREAKOUT-SCENARIO-PLANNING SKILL)
 ==================================================
-Bắt buộc xem xét:
-- Kịch bản A (Breakout Lên): Phá kháng cự/cạnh trên. Trigger = Cản trên + buffer (0.2 * ATR). Retest = kiểm tra lại cản làm hỗ trợ. SL dưới nến breakout. TP1 = 1:1.2 RR, TP2 = cản/thanh khoản tiếp theo.
-- Kịch bản B (Breakdown Xuống): Phá hỗ trợ/cạnh dưới. Trigger = Cản dưới - buffer (0.2 * ATR). Retest = kiểm tra lại cản làm kháng cự. SL trên nến breakdown. TP1 = 1:1.2 RR, TP2 = hỗ trợ/thanh khoản tiếp theo.
-- Kịch bản C (Range Continues): Giá nằm trong biên, chờ phá vỡ.
-- Kịch bản D (False Breakout): Cảnh báo nếu nến rút chân tạo râu dài khi vượt cản.
+
+ĐIỀU KIỆN TIÊN QUYẾT ĐỂ XUẤT KỊCH BẢN VÀO LỆNH:
+- CHỈ LẬP KỊCH BẢN KHI ĐÃ CÓ ÍT NHẤT 2 LẦN CHẠM TẠO SÓNG ĐỘC LẬP TRÊN VÙNG BIÊN VÀ GIÁ ĐANG Ở LẦN TIẾP CẬN THỨ 3!
+- Nếu cấu trúc chưa đủ 2 lần chạm độc lập hoặc đang trong sóng đẩy đơn lẻ: `scenarios` PHẢI LÀ MẢNG RỖNG `[]`, `current_status = ""WAIT""` hoặc `""MONITOR""`. Tuyệt đối không sinh kịch bản rác!
+
+Khi đủ điều kiện mô hình:
+- Kịch bản A (Breakout Lên): Phá kháng cự/cạnh trên (đã có >= 2 lần chạm). Trigger = Cản trên + buffer (0.25 * ATR). Retest = kiểm tra lại cản làm hỗ trợ. SL cách trigger từ 5.0 đến 9.0 giá (đối với XAUUSD). TP1 = R:R 1:1.2, TP2 = R:R 1:2.2.
+- Kịch bản B (Breakdown Xuống): Phá hỗ trợ/cạnh dưới (đã có >= 2 lần chạm). Trigger = Cản dưới - buffer (0.25 * ATR). Retest = kiểm tra lại cản làm kháng cự. SL cách trigger từ 5.0 đến 9.0 giá. TP1 = R:R 1:1.2, TP2 = R:R 1:2.2.
 
 QUY TẮC VÀNG CHO EA:
 - confirmation.condition: BREAKOUT_BUY => 'CLOSE_ABOVE_TRIGGER', BREAKOUT_SELL => 'CLOSE_BELOW_TRIGGER'.
 - confirmation.timeframe = khung nến xác nhận (ví dụ M5 hoặc M15).
 - retest.timeframe = M1 (nếu confirm M5) hoặc M5 (nếu confirm M15).
 - retest.condition = 'RETEST_THEN_CONTINUE'.
-- sl: Cách trigger từ 5 đến 9.5 giá (đối với XAUUSD).
-- tps: ĐÚNG 2 mốc [TP1, TP2], đặt sớm hơn cản 1 giá để dễ cắn TP.
+- sl: Cách trigger từ 5.0 đến 9.0 giá (đối với XAUUSD).
+- tps: ĐÚNG 2 mốc [TP1, TP2], đặt sớm hơn cản 1 giá để bảo đảm cắn TP.
 
 ==================================================
 ĐỊNH DẠNG ĐẦU RA BẮT BUỘC:
@@ -71,16 +84,16 @@ Schema JSON:
     ""market_state"": ""RANGE|TREND_UP|TREND_DOWN"",
     ""primary_pattern"": {
       ""group"": ""A|B|C|D"",
-      ""name"": ""RECTANGLE|ASCENDING_TRIANGLE|..."",
-      ""status"": ""DEVELOPING|POTENTIAL|CONFIRMED"",
+      ""name"": ""RECTANGLE|ASCENDING_TRIANGLE|NO_CLEAR_STRUCTURE"",
+      ""status"": ""DEVELOPING|POTENTIAL|CONFIRMED|NOT_FOUND"",
       ""confidence"": ""LOW|MEDIUM|HIGH""
     },
     ""other_candidates"": [],
     ""zones"": {
-      ""resistance"": { ""low"": 3965.5, ""high"": 3967.6, ""touch_count"": 3 },
-      ""support"": { ""low"": 3954.8, ""high"": 3956.5, ""touch_count"": 3 }
+      ""resistance"": { ""low"": 3968.0, ""high"": 3970.0, ""touch_count"": 2 },
+      ""support"": { ""low"": 3955.0, ""high"": 3956.5, ""touch_count"": 2 }
     },
-    ""evidence"": [""Bằng chứng 1 tiếng Việt"", ""Bằng chứng 2""],
+    ""evidence"": [""Đỉnh 1 tại 3970 (nến 12), sóng giảm về 3955, Đỉnh 2 test lại 3970 (nến 28) hình thành Kháng cự 2 lần chạm"", ""Đáy 1 tại 3955, Đáy 2 tại 3962 nâng cao dần""],
     ""missing_evidence"": []
   },
   ""trading_plan"": {
@@ -92,12 +105,12 @@ Schema JSON:
       {
         ""id"": ""scenario_1_breakout_buy"",
         ""type"": ""BREAKOUT_BUY"",
-        ""name"": ""Breakout Mua khi vượt ..."",
-        ""logic"": ""Mô tả tiếng Việt chi tiết điều kiện nến phá vỡ và retest..."",
-        ""trigger_price"": 3968.5,
-        ""sl"": 3960.0,
+        ""name"": ""Breakout Mua khi vượt 3970.0"",
+        ""logic"": ""Chờ nến M5 đóng cửa vượt qua cản trên kèm buffer (3970.0 + 0.25*ATR = 3970.80) ở lần tiếp cận thứ 3. Sau đó chờ M1 retest vùng 3969-3970 xác nhận thành hỗ trợ mới rồi kích hoạt Buy."",
+        ""trigger_price"": 3970.8,
+        ""sl"": 3964.5,
         ""max_risk_usd"": 100,
-        ""tps"": [3978.0, 3986.0],
+        ""tps"": [3978.5, 3986.5],
         ""confirmation"": {
           ""condition"": ""CLOSE_ABOVE_TRIGGER"",
           ""timeframe"": ""M5"",
@@ -107,27 +120,6 @@ Schema JSON:
           ""timeframe"": ""M1"",
           ""condition"": ""RETEST_THEN_CONTINUE"",
           ""patterns"": [""Pinbar"", ""Bullish Engulfing""]
-        },
-        ""status"": ""PENDING""
-      },
-      {
-        ""id"": ""scenario_2_breakout_sell"",
-        ""type"": ""BREAKOUT_SELL"",
-        ""name"": ""Breakdown Bán khi thủng ..."",
-        ""logic"": ""Mô tả tiếng Việt chi tiết điều kiện nến phá vỡ và retest..."",
-        ""trigger_price"": 3953.5,
-        ""sl"": 3961.5,
-        ""max_risk_usd"": 100,
-        ""tps"": [3943.0, 3935.0],
-        ""confirmation"": {
-          ""condition"": ""CLOSE_BELOW_TRIGGER"",
-          ""timeframe"": ""M5"",
-          ""patterns"": [""Bearish Marubozu""]
-        },
-        ""retest"": {
-          ""timeframe"": ""M1"",
-          ""condition"": ""RETEST_THEN_CONTINUE"",
-          ""patterns"": [""Shooting Star"", ""Bearish Engulfing""]
         },
         ""status"": ""PENDING""
       }
@@ -175,7 +167,11 @@ Schema JSON:
         }
 
         sb.AppendLine();
-        sb.AppendLine("HÃY ÁP DỤNG SKILL ĐỂ PHÂN TÍCH VÀ TRẢ VỀ DUY NHẤT 1 RAW JSON OBJECT:");
+        sb.AppendLine("HÃY ÁP DỤNG 2 BỘ SKILL ĐỂ PHÂN TÍCH VÀ TRẢ VỀ DUY NHẤT 1 RAW JSON OBJECT:");
+        sb.AppendLine("LƯU Ý CỐT LÕI (CHỐNG LỖI ĐẾM NẾN & BẪY PULLBACK):");
+        sb.AppendLine("1. Kiểm tra kỹ các lần chạm: Giữa 2 lần chạm cùng biên (Đỉnh 1 và Đỉnh 2), bắt buộc phải có sóng hồi đối nghịch (3-5 nến, lùi >= 1.5 ATR) tạo đáy thung lũng ở giữa. Không đếm các nến đứng sát nhau!");
+        sb.AppendLine("2. Tuyệt đối không bắt Breakout tại nhịp hồi (Pullback) đơn lẻ sau 1 sóng đẩy dốc đứng.");
+        sb.AppendLine("3. Chỉ xuất kịch bản Breakout khi biên đã có đủ 2 lần chạm tạo sóng và giá đang ở nhịp tiếp cận thứ 3. Nếu chưa đủ cấu trúc, trả về 'primary_pattern.name': 'NO_CLEAR_STRUCTURE', 'scenarios': [].");
         return sb.ToString();
     }
 

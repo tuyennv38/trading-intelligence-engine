@@ -417,22 +417,30 @@ public class BreakoutPatternService : IBreakoutPatternService
             Status = EaScenarioStatus.Pending
         };
 
-        // Tùy theo Bias để sắp xếp hoặc lọc kịch bản
+        // CHỈ LẬP KỊCH BẢN KHI VÙNG BIÊN ĐÃ CÓ TỐI THIỂU 2 ĐIỂM CHẠM TẠO SÓNG ĐỘC LẬP
+        bool hasResConfirmed = patternResult.Zones.Resistance.TouchCount >= 2;
+        bool hasSupConfirmed = patternResult.Zones.Support.TouchCount >= 2;
+
         if (patternResult.PrimaryPattern.Name == "ASCENDING_TRIANGLE" || patternResult.PrimaryPattern.Name == "BULL_FLAG")
         {
-            scenarios.Add(buyScenario);
-            scenarios.Add(sellScenario);
+            if (hasResConfirmed) scenarios.Add(buyScenario);
+            if (hasSupConfirmed) scenarios.Add(sellScenario);
         }
         else if (patternResult.PrimaryPattern.Name == "DESCENDING_TRIANGLE" || patternResult.PrimaryPattern.Name == "BEAR_FLAG")
         {
-            scenarios.Add(sellScenario);
-            scenarios.Add(buyScenario);
+            if (hasSupConfirmed) scenarios.Add(sellScenario);
+            if (hasResConfirmed) scenarios.Add(buyScenario);
         }
         else
         {
-            // Range 2 chiều
-            scenarios.Add(buyScenario);
-            scenarios.Add(sellScenario);
+            // Range 2 chiều: Chỉ kích hoạt biên nào đã test ít nhất 2 lần
+            if (hasResConfirmed) scenarios.Add(buyScenario);
+            if (hasSupConfirmed) scenarios.Add(sellScenario);
+        }
+
+        if (scenarios.Count == 0)
+        {
+            plan.Context = $"Chưa đủ điều kiện Breakout: Kháng cự ({patternResult.Zones.Resistance.TouchCount} lần chạm) và Hỗ trợ ({patternResult.Zones.Support.TouchCount} lần chạm) chưa đạt tối thiểu 2 điểm chạm tạo sóng độc lập. Chờ lần test thứ 2 trước khi lập kịch bản.";
         }
 
         plan.Scenarios = scenarios;
@@ -445,7 +453,7 @@ public class BreakoutPatternService : IBreakoutPatternService
         {
             PatternRecognition = patternResult,
             TradingPlan = plan,
-            CurrentStatus = patternResult.PrimaryPattern.Status == "CONFIRMED" ? "SCENARIO_CONFIRMED" : "MONITOR",
+            CurrentStatus = (scenarios.Count > 0 && patternResult.PrimaryPattern.Status == "CONFIRMED") ? "SCENARIO_CONFIRMED" : "WAIT",
             SummaryReport = report
         };
 
