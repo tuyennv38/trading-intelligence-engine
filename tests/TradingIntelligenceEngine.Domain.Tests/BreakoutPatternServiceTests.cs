@@ -32,6 +32,13 @@ public class BreakoutPatternServiceTests
             return Task.CompletedTask;
         }
         public Task<TradingPlanResponse?> GetLatestPlanAsync(string symbol) => Task.FromResult(SavedPlan);
+        public TradingPlanResponse? SavedBreakoutPlan { get; private set; }
+        public Task SetLatestBreakoutPlanAsync(string symbol, TradingPlanResponse plan)
+        {
+            SavedBreakoutPlan = plan;
+            return Task.CompletedTask;
+        }
+        public Task<TradingPlanResponse?> GetLatestBreakoutPlanAsync(string symbol) => Task.FromResult(SavedBreakoutPlan);
         public Task SetSymbolSessionAsync(string symbol, SymbolTradingSession session) => Task.CompletedTask;
         public Task<SymbolTradingSession?> GetSymbolSessionAsync(string symbol) => Task.FromResult<SymbolTradingSession?>(null);
         public Task<List<SymbolTradingSession>> ListSymbolSessionsAsync() => Task.FromResult(new List<SymbolTradingSession>());
@@ -138,13 +145,24 @@ public class BreakoutPatternServiceTests
 
         Assert.Equal("SCENARIO_CONFIRMED", plan.CurrentStatus);
         Assert.True(buy.StopLoss < buy.TriggerPrice);
+        Assert.Single(buy.TakeProfits);
         Assert.True(buy.TakeProfits[0] > buy.TriggerPrice);
-        Assert.True(buy.TakeProfits[1] > buy.TakeProfits[0]);
         Assert.True(sell.StopLoss > sell.TriggerPrice);
+        Assert.Single(sell.TakeProfits);
         Assert.True(sell.TakeProfits[0] < sell.TriggerPrice);
-        Assert.True(sell.TakeProfits[1] < sell.TakeProfits[0]);
-        // SL Vàng nằm trong khoảng 5.0 - 9.5 giá
-        Assert.InRange(buy.TriggerPrice!.Value - buy.StopLoss, 5.0m, 9.5m);
+
+        // SL theo ATR: 1.2 - 2.5 ATR tính từ trigger
+        var atr = pattern.Atr;
+        Assert.InRange(buy.TriggerPrice!.Value - buy.StopLoss, atr * 1.2m - 0.01m, atr * 2.5m + 0.01m);
+
+        // Hợp đồng với EA: vùng phá vỡ, mức vô hiệu hóa, entry mode, mã mô hình nến, hạn hiệu lực
+        Assert.Equal(2009.8m, buy.ZoneLow);
+        Assert.Equal(2010.3m, buy.ZoneHigh);
+        Assert.True(buy.InvalidationPrice < buy.ZoneLow);
+        Assert.True(sell.InvalidationPrice > sell.ZoneHigh);
+        Assert.Equal(BreakoutEntryMode.Retest, buy.EntryMode);
+        Assert.All(buy.Confirmation!.Patterns, code => Assert.Contains(code, BreakoutCandlePatterns.All));
+        Assert.True(plan.TradingPlan.ValidUntil > DateTimeOffset.UtcNow.ToUnixTimeSeconds());
     }
 
     [Fact]
@@ -315,7 +333,41 @@ public class BreakoutPatternServiceTests
         Assert.Equal("RECTANGLE", result.PatternRecognition.PrimaryPattern.Name);
         Assert.Contains(result.TradingPlan.Scenarios, s => s.IsBuy && s.IsBreakout && s.TriggerPrice > 0);
         Assert.Contains(result.TradingPlan.Scenarios, s => s.IsSell && s.IsBreakout && s.TriggerPrice > 0);
-        Assert.NotNull(store.SavedPlan);
-        Assert.Equal(result.TradingPlan.SignalId, store.SavedPlan!.SignalId);
+        // Plan Breakout lưu vào slot riêng, không ghi đè plan chung của các luồng khác
+        Assert.Null(store.SavedPlan);
+        Assert.NotNull(store.SavedBreakoutPlan);
+        Assert.Equal(result.TradingPlan.SignalId, store.SavedBreakoutPlan!.SignalId);
+    }
+
+    [Fact]
+    public async Task Analyze_QueryOverrides_DoNotMutateSharedOptions()
+    {
+        long baseTime = DateTimeOffset.UtcNow.AddDays(-1).ToUnixTimeSeconds();
+        var raw = Enumerable.Range(0, 40).Select(i => new RawCandleDto
+        {
+            Time = baseTime + i * 300, Open = 2005m, High = 2006m, Low = 2004m, Close = 2005m, TickVolume = 100
+        }).ToList();
+        var options = new BreakoutOptions { MaxRiskUsd = 100m, PatternMode = "QUANT", ScenarioMode = "QUANT" };
+        var service = new BreakoutPatternService(
+            new MockKlinesClient(raw), new MockMarketDataStore(), options,
+            new StubSwingDetector(), new SwingOptions(), NullLogger<BreakoutPatternService>.Instance);
+
+        await service.AnalyzeAndExecuteBreakoutSyncAsync("XAUUSD", "5m", 40, maxRiskUsd: 30m, patternMode: "AI", scenarioMode: "AI", notify: false);
+
+        Assert.Equal(100m, options.MaxRiskUsd);
+        Assert.Equal("QUANT", options.PatternMode);
+        Assert.Equal("QUANT", options.ScenarioMode);
+    }
+
+    [Theory]
+    [InlineData("Bullish Marubozu", "MARUBOZU")]
+    [InlineData("Strong Expansion Candle", "STRONG_BODY")]
+    [InlineData("Shooting Star", "PINBAR")]
+    [InlineData("Bearish Engulfing", "ENGULFING")]
+    [InlineData("pinbar", "PINBAR")]
+    [InlineData("Doji", null)]
+    public void CandlePatterns_NormalizeFreeTextToCodes(string input, string? expected)
+    {
+        Assert.Equal(expected, BreakoutCandlePatterns.Normalize(input));
     }
 }

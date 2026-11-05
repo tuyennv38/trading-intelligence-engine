@@ -370,9 +370,6 @@ public class BreakoutPatternService : IBreakoutPatternService
         var confirmedSwings = candles != null && candles.Count > 0
             ? _swingDetector.Detect(candles, _swingOptions).Where(s => s.Status == SwingStatus.Confirmed).ToList()
             : new List<SwingPoint>();
-        decimal? rangeHeight = (resZone.High.HasValue && supZone.Low.HasValue && resZone.High.Value > supZone.Low.Value)
-            ? resZone.High.Value - supZone.Low.Value
-            : null;
 
         EaTradeScenario? buyScenario = null;
         EaTradeScenario? sellScenario = null;
@@ -402,7 +399,7 @@ public class BreakoutPatternService : IBreakoutPatternService
             }
             else
             {
-                var (sl, tp1, tp2) = PlanRisk(true, trigger, resZone, buffer, atr, symbol, rangeHeight, confirmedSwings, R);
+                var (sl, tp1) = PlanRisk(true, trigger, resZone, buffer, atr, confirmedSwings, R);
                 buyScenario = new EaTradeScenario
                 {
                     Id = "scenario_1_breakout_buy",
@@ -412,20 +409,24 @@ public class BreakoutPatternService : IBreakoutPatternService
                     TriggerPrice = trigger,
                     StopLoss = sl,
                     MaxRiskUsd = maxRiskUsd,
-                    TakeProfits = new List<decimal> { tp1, tp2 },
+                    TakeProfits = new List<decimal> { tp1 },
                     Confirmation = new ScenarioConfirmation
                     {
                         Condition = "CLOSE_ABOVE_TRIGGER",
                         Timeframe = tf,
-                        Patterns = new List<string> { "Bullish Marubozu", "Strong Expansion Candle" }
+                        Patterns = new List<string> { BreakoutCandlePatterns.StrongBody }
                     },
                     Retest = new ScenarioRetest
                     {
                         Timeframe = ScenarioRetest.OneStepSmaller(tf),
                         Condition = EaRetestCondition.RetestThenContinue,
-                        Patterns = new List<string> { "Pinbar", "Bullish Engulfing" }
+                        Patterns = new List<string> { BreakoutCandlePatterns.Pinbar, BreakoutCandlePatterns.Engulfing }
                     },
-                    Status = EaScenarioStatus.Pending
+                    Status = EaScenarioStatus.Pending,
+                    ZoneLow = R(resZone.Low!.Value),
+                    ZoneHigh = R(resZone.High!.Value),
+                    InvalidationPrice = R(resZone.Low!.Value - buffer),
+                    EntryMode = BreakoutEntryMode.Retest
                 };
             }
         }
@@ -439,7 +440,7 @@ public class BreakoutPatternService : IBreakoutPatternService
             }
             else
             {
-                var (sl, tp1, tp2) = PlanRisk(false, trigger, supZone, buffer, atr, symbol, rangeHeight, confirmedSwings, R);
+                var (sl, tp1) = PlanRisk(false, trigger, supZone, buffer, atr, confirmedSwings, R);
                 sellScenario = new EaTradeScenario
                 {
                     Id = "scenario_2_breakout_sell",
@@ -449,20 +450,24 @@ public class BreakoutPatternService : IBreakoutPatternService
                     TriggerPrice = trigger,
                     StopLoss = sl,
                     MaxRiskUsd = maxRiskUsd,
-                    TakeProfits = new List<decimal> { tp1, tp2 },
+                    TakeProfits = new List<decimal> { tp1 },
                     Confirmation = new ScenarioConfirmation
                     {
                         Condition = "CLOSE_BELOW_TRIGGER",
                         Timeframe = tf,
-                        Patterns = new List<string> { "Bearish Marubozu", "Strong Expansion Candle" }
+                        Patterns = new List<string> { BreakoutCandlePatterns.StrongBody }
                     },
                     Retest = new ScenarioRetest
                     {
                         Timeframe = ScenarioRetest.OneStepSmaller(tf),
                         Condition = EaRetestCondition.RetestThenContinue,
-                        Patterns = new List<string> { "Shooting Star", "Bearish Engulfing" }
+                        Patterns = new List<string> { BreakoutCandlePatterns.Pinbar, BreakoutCandlePatterns.Engulfing }
                     },
-                    Status = EaScenarioStatus.Pending
+                    Status = EaScenarioStatus.Pending,
+                    ZoneLow = R(supZone.Low!.Value),
+                    ZoneHigh = R(supZone.High!.Value),
+                    InvalidationPrice = R(supZone.High!.Value + buffer),
+                    EntryMode = BreakoutEntryMode.Retest
                 };
             }
         }
@@ -485,6 +490,7 @@ public class BreakoutPatternService : IBreakoutPatternService
 
         plan.Scenarios = scenarios;
         plan.EnsureDefaults(symbol, signalId, maxRiskUsd);
+        FinalizeBreakoutPlan(plan, patternResult, atr);
 
         var currentStatus = scenarios.Count > 0
             ? "SCENARIO_CONFIRMED"
@@ -514,19 +520,11 @@ public class BreakoutPatternService : IBreakoutPatternService
         symbol = string.IsNullOrWhiteSpace(symbol) ? _options.Symbol : symbol.Trim().ToUpperInvariant();
         interval = string.IsNullOrWhiteSpace(interval) ? _options.Interval : interval.Trim();
         var limitVal = limit.HasValue && limit.Value > 0 ? limit.Value : _options.Limit;
-        if (maxRiskUsd.HasValue && maxRiskUsd.Value > 0)
-        {
-            _options.MaxRiskUsd = maxRiskUsd.Value; // Lưu lại mức rủi ro mới cho các chu kỳ quét tự động tiếp theo
-        }
-        var riskVal = _options.MaxRiskUsd;
 
-        if (!string.IsNullOrWhiteSpace(patternMode))
-            _options.PatternMode = patternMode.Trim().ToUpperInvariant();
-        if (!string.IsNullOrWhiteSpace(scenarioMode))
-            _options.ScenarioMode = scenarioMode.Trim().ToUpperInvariant();
-
-        var effPatternMode = _options.PatternMode;
-        var effScenarioMode = _options.ScenarioMode;
+        // Tham số truyền vào chỉ áp dụng cho lần quét này, không ghi đè cấu hình dùng chung (job định kỳ, client khác)
+        var riskVal = maxRiskUsd.HasValue && maxRiskUsd.Value > 0 ? maxRiskUsd.Value : _options.MaxRiskUsd;
+        var effPatternMode = NormalizeMode(string.IsNullOrWhiteSpace(patternMode) ? _options.PatternMode : patternMode);
+        var effScenarioMode = NormalizeMode(string.IsNullOrWhiteSpace(scenarioMode) ? _options.ScenarioMode : scenarioMode);
 
         _logger.LogInformation("Khởi động quy trình Breakout Sync cho {Symbol} ({Interval}, limit={Limit}). Chế độ: [Pattern: {PMode}, Scenario: {SMode}]",
             symbol, interval, limitVal, effPatternMode, effScenarioMode);
@@ -643,8 +641,10 @@ public class BreakoutPatternService : IBreakoutPatternService
             scenarioResult = await PlanBreakoutScenarioAsync(patternResult, analysisCandles, riskVal, cancellationToken);
         }
 
-        // 4. Lưu TradingPlanResponse vào Store
-        await _marketDataStore.SetLatestPlanAsync(symbol, scenarioResult.TradingPlan);
+        // 4. Chuẩn hóa hợp đồng dữ liệu cho EA (mọi engine) và lưu vào slot Breakout riêng
+        var finalizeAtr = scenarioResult.PatternRecognition.Atr > 0 ? scenarioResult.PatternRecognition.Atr : FallbackAtr(analysisCandles);
+        FinalizeBreakoutPlan(scenarioResult.TradingPlan, scenarioResult.PatternRecognition, finalizeAtr);
+        await _marketDataStore.SetLatestBreakoutPlanAsync(symbol, scenarioResult.TradingPlan);
 
         _logger.LogInformation("Hoàn tất lập kịch bản Breakout cho {Symbol}. Primary Pattern: {Pattern} ({Status}). Động cơ: {Mode}",
             symbol, scenarioResult.PatternRecognition.PrimaryPattern.Name, scenarioResult.PatternRecognition.PrimaryPattern.Status, engineMode);
@@ -877,37 +877,29 @@ public class BreakoutPatternService : IBreakoutPatternService
 
     private static int DigitsFor(decimal price) => price >= 100m ? 2 : (price >= 10m ? 3 : 5);
 
-    private static bool IsGold(string symbol) =>
-        symbol.Contains("XAU", StringComparison.OrdinalIgnoreCase) ||
-        symbol.Contains("GOLD", StringComparison.OrdinalIgnoreCase);
-
     /// <summary>
-    /// SL đặt tại điểm vô hiệu hóa cấu trúc (quay lại bên trong vùng vừa phá, trừ buffer), giới hạn trong khoảng rủi ro cho phép
-    /// (Vàng: 5.0 - 9.5 giá; symbol khác: 1 - 3 ATR). TP1 = swing tham chiếu kế tiếp có trong dữ liệu (1R - 3R) nếu có, ngược lại 1.2R;
-    /// TP2 = measured move bằng chiều cao vùng tích lũy (giới hạn trong khoảng TP1+0.5R .. 3.5R), ngược lại 2.2R.
+    /// SL đặt tại điểm vô hiệu hóa cấu trúc (quay lại bên trong vùng vừa phá, trừ buffer), giới hạn trong khoảng
+    /// [SlMinAtr, SlMaxAtr] x ATR tính từ trigger. TP (duy nhất) = swing tham chiếu kế tiếp có trong dữ liệu (1R - 3R), ngược lại 1.2R.
     /// </summary>
-    private static (decimal Sl, decimal Tp1, decimal Tp2) PlanRisk(
+    private (decimal Sl, decimal Tp) PlanRisk(
         bool isBuy,
         decimal trigger,
         BoundaryZone brokenZone,
         decimal buffer,
         decimal atr,
-        string symbol,
-        decimal? rangeHeight,
         IReadOnlyList<SwingPoint> swings,
         Func<decimal, decimal> round)
     {
         var invalidation = isBuy ? brokenZone.Low!.Value - buffer : brokenZone.High!.Value + buffer;
         var structuralDistance = Math.Abs(trigger - invalidation);
 
-        var gold = IsGold(symbol);
-        var minDistance = gold ? 5.0m : atr * 1.0m;
-        var maxDistance = gold ? 9.5m : atr * 3.0m;
-        var slDistance = Math.Clamp(structuralDistance, minDistance, maxDistance);
+        var minAtr = _options.SlMinAtr > 0 ? _options.SlMinAtr : 1.2m;
+        var maxAtr = _options.SlMaxAtr >= minAtr ? _options.SlMaxAtr : minAtr;
+        var slDistance = Math.Clamp(structuralDistance, atr * minAtr, atr * maxAtr);
 
         var sl = round(isBuy ? trigger - slDistance : trigger + slDistance);
 
-        // TP1: swing tham chiếu kế tiếp theo hướng breakout, cách trigger từ 1R đến 3R
+        // TP: swing tham chiếu kế tiếp theo hướng breakout, cách trigger từ 1R đến 3R
         var references = swings
             .Where(s => isBuy
                 ? s.Type == SwingType.High && s.Price >= trigger + slDistance && s.Price <= trigger + slDistance * 3m
@@ -915,20 +907,62 @@ public class BreakoutPatternService : IBreakoutPatternService
             .Select(s => s.Price)
             .ToList();
 
-        decimal tp1Distance = references.Count > 0
+        decimal tpDistance = references.Count > 0
             ? (isBuy ? references.Min() - trigger : trigger - references.Max())
             : slDistance * 1.2m;
 
-        // TP2: measured move của vùng tích lũy
-        decimal tp2Distance = rangeHeight.HasValue
-            ? Math.Clamp(rangeHeight.Value, tp1Distance + slDistance * 0.5m, slDistance * 3.5m)
-            : slDistance * 2.2m;
-        if (tp2Distance <= tp1Distance) tp2Distance = tp1Distance + slDistance * 0.5m;
-
-        var tp1 = round(isBuy ? trigger + tp1Distance : trigger - tp1Distance);
-        var tp2 = round(isBuy ? trigger + tp2Distance : trigger - tp2Distance);
-        return (sl, tp1, tp2);
+        var tp = round(isBuy ? trigger + tpDistance : trigger - tpDistance);
+        return (sl, tp);
     }
+
+    /// <summary>
+    /// Chuẩn hóa kế hoạch Breakout theo hợp đồng với EA BreakoutTrader, áp dụng cho mọi engine (Quant / AI):
+    /// chỉ giữ kịch bản BREAKOUT_*, đúng 1 TP, mã mô hình nến chuẩn, vùng phá vỡ + mức vô hiệu hóa, entry_mode và valid_until.
+    /// </summary>
+    private void FinalizeBreakoutPlan(TradingPlanResponse plan, PatternRecognitionResult pattern, decimal atr)
+    {
+        plan.Scenarios ??= new List<EaTradeScenario>();
+        plan.Scenarios = plan.Scenarios.Where(s => s.IsBreakout && s.TriggerPrice.HasValue && s.TriggerPrice.Value > 0).ToList();
+
+        var refPrice = pattern.CurrentPrice > 0
+            ? pattern.CurrentPrice
+            : plan.Scenarios.Select(s => s.TriggerPrice!.Value).FirstOrDefault();
+        var digits = DigitsFor(refPrice);
+        var buffer = Math.Round(atr * 0.25m, digits);
+
+        foreach (var s in plan.Scenarios)
+        {
+            s.TakeProfits ??= new List<decimal>();
+            if (s.TakeProfits.Count > 1)
+                s.TakeProfits = s.TakeProfits.Take(1).ToList();
+
+            s.Confirmation ??= new ScenarioConfirmation { Timeframe = pattern.Timeframe };
+            s.Confirmation.Patterns = BreakoutCandlePatterns.NormalizeList(s.Confirmation.Patterns);
+            if (s.Confirmation.Patterns.Count == 0)
+                s.Confirmation.Patterns.Add(BreakoutCandlePatterns.StrongBody);
+
+            if (s.Retest != null)
+                s.Retest.Patterns = BreakoutCandlePatterns.NormalizeList(s.Retest.Patterns);
+
+            s.EntryMode = BreakoutEntryMode.Normalize(s.EntryMode);
+
+            // AI có thể không trả vùng phá vỡ: lấy từ kết quả nhận diện mô hình
+            var zone = s.IsBuy ? pattern.Zones.Resistance : pattern.Zones.Support;
+            if (!s.ZoneLow.HasValue && zone.Low.HasValue) s.ZoneLow = Math.Round(zone.Low.Value, digits);
+            if (!s.ZoneHigh.HasValue && zone.High.HasValue) s.ZoneHigh = Math.Round(zone.High.Value, digits);
+            if (!s.InvalidationPrice.HasValue)
+            {
+                if (s.IsBuy && s.ZoneLow.HasValue) s.InvalidationPrice = Math.Round(s.ZoneLow.Value - buffer, digits);
+                else if (s.IsSell && s.ZoneHigh.HasValue) s.InvalidationPrice = Math.Round(s.ZoneHigh.Value + buffer, digits);
+            }
+        }
+
+        var validity = _options.PlanValidityMinutes > 0 ? _options.PlanValidityMinutes : 60;
+        plan.ValidUntil = DateTimeOffset.UtcNow.AddMinutes(validity).ToUnixTimeSeconds();
+    }
+
+    private static string NormalizeMode(string? mode) =>
+        string.Equals(mode?.Trim(), "AI", StringComparison.OrdinalIgnoreCase) ? "AI" : "QUANT";
 
     // Mobius trả về thời gian mở nến: nến cuối chưa đủ thời lượng thì còn đang hình thành
     private static List<Candle> DropFormingCandle(List<Candle> candles, string interval)

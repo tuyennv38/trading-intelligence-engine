@@ -48,4 +48,13 @@ public sealed class BreakoutOptions
     /// Bỏ kịch bản (NO_CHASE) nếu giá đã vượt trigger quá số lần ATR này.
     /// </summary>
     public decimal NoChaseAtr { get; set; } = 1.0m;
+
+    /// <summary>Khoảng cách SL tối thiểu tính từ trigger (bội số ATR).</summary>
+    public decimal SlMinAtr { get; set; } = 1.2m;
+
+    /// <summary>Khoảng cách SL tối đa tính từ trigger (bội số ATR).</summary>
+    public decimal SlMaxAtr { get; set; } = 2.5m;
+
+    /// <summary>Thời gian hiệu lực của kế hoạch Breakout (phút). EA không vào lệnh mới theo plan đã hết hạn.</summary>
+    public int PlanValidityMinutes { get; set; } = 60;
 }

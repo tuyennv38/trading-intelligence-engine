@@ -118,18 +118,62 @@ public class BreakoutController : ControllerBase
     }
 
     /// <summary>
+    /// EA BreakoutTrader poll: thông tin tóm tắt kế hoạch Breakout mới nhất (slot riêng, không lẫn plan của luồng khác).
+    /// GET /api/v1/breakout/latest-id?symbol=XAUUSD
+    /// </summary>
+    [HttpGet("latest-id")]
+    public async Task<IActionResult> GetLatestBreakoutId([FromQuery] string symbol = "XAUUSD")
+    {
+        var plan = await _marketDataStore.GetLatestBreakoutPlanAsync(symbol);
+        if (plan == null)
+        {
+            return Ok(new
+            {
+                signal_id = string.Empty,
+                has_scenarios = false,
+                no_trade = true
+            });
+        }
+
+        return Ok(new
+        {
+            signal_id = plan.SignalId,
+            has_scenarios = plan.HasScenarios,
+            no_trade = plan.HasNoTrade,
+            created_at = plan.CreatedAt,
+            valid_until = plan.ValidUntil
+        });
+    }
+
+    /// <summary>
+    /// EA BreakoutTrader: chi tiết kế hoạch Breakout theo signal_id.
+    /// GET /api/v1/breakout/plan/{signalId}?symbol=XAUUSD
+    /// </summary>
+    [HttpGet("plan/{signalId}")]
+    public async Task<IActionResult> GetBreakoutPlan(string signalId, [FromQuery] string symbol = "XAUUSD")
+    {
+        var plan = await _marketDataStore.GetLatestBreakoutPlanAsync(symbol);
+        if (plan == null || plan.SignalId != signalId)
+        {
+            return NotFound(new { error = $"Breakout plan '{signalId}' not found for symbol '{symbol}'" });
+        }
+
+        return Ok(plan);
+    }
+
+    /// <summary>
     /// Lấy kế hoạch kịch bản Breakout mới nhất đang lưu trong Store cho Symbol.
     /// </summary>
     [HttpGet("latest/{symbol}")]
     public async Task<IActionResult> GetLatestBreakoutPlan(string symbol)
     {
-        var plan = await _marketDataStore.GetLatestPlanAsync(symbol);
+        var plan = await _marketDataStore.GetLatestBreakoutPlanAsync(symbol);
         if (plan == null)
         {
             return NotFound(new
             {
                 success = false,
-                message = $"Chưa có kế hoạch nào được lưu cho {symbol}."
+                message = $"Chưa có kế hoạch Breakout nào được lưu cho {symbol}."
             });
         }
 

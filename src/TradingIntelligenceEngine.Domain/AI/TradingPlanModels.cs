@@ -35,6 +35,11 @@ public class TradingPlanResponse
     [JsonPropertyName("max_risk_usd")]
     public decimal MaxRiskUsd { get; set; }
 
+    /// <summary>Unix time (UTC, giây) hết hiệu lực của kế hoạch. Quá mốc này EA không vào lệnh mới theo plan.</summary>
+    [JsonPropertyName("valid_until")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public long? ValidUntil { get; set; }
+
     public const decimal DefaultMaxRiskUsd = 100m;
 
     [JsonIgnore]
@@ -177,6 +182,28 @@ public class EaTradeScenario
     /// <summary>PENDING | ACTIVE | HIT_SL | HIT_TP | CANCELLED</summary>
     [JsonPropertyName("status")]
     public string Status { get; set; } = EaScenarioStatus.Pending;
+
+    /// <summary>BREAKOUT_*: biên dưới của vùng bị phá (kháng cự với BUY, hỗ trợ với SELL).</summary>
+    [JsonPropertyName("zone_low")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public decimal? ZoneLow { get; set; }
+
+    /// <summary>BREAKOUT_*: biên trên của vùng bị phá.</summary>
+    [JsonPropertyName("zone_high")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public decimal? ZoneHigh { get; set; }
+
+    /// <summary>
+    /// BREAKOUT_*: nến đóng cửa quay ngược qua mức này (BUY: dưới, SELL: trên) trước khi vào lệnh = phá vỡ giả, EA hủy kịch bản.
+    /// </summary>
+    [JsonPropertyName("invalidation_price")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public decimal? InvalidationPrice { get; set; }
+
+    /// <summary>BREAKOUT_*: RETEST | MOMENTUM (xem <see cref="BreakoutEntryMode"/>).</summary>
+    [JsonPropertyName("entry_mode")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? EntryMode { get; set; }
 
     [JsonIgnore]
     public bool IsActive => string.Equals(Status, EaScenarioStatus.Active, StringComparison.OrdinalIgnoreCase);

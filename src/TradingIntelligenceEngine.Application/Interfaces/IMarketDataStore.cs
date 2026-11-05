@@ -42,6 +42,16 @@ public interface IMarketDataStore
     Task<Domain.AI.TradingPlanResponse?> GetLatestPlanAsync(string symbol);
 
     /// <summary>
+    /// Lưu kế hoạch Breakout mới nhất (tách riêng khỏi plan chung để không ghi đè/bị ghi đè bởi luồng khác).
+    /// </summary>
+    Task SetLatestBreakoutPlanAsync(string symbol, Domain.AI.TradingPlanResponse plan);
+
+    /// <summary>
+    /// Lấy kế hoạch Breakout mới nhất cho EA BreakoutTrader.
+    /// </summary>
+    Task<Domain.AI.TradingPlanResponse?> GetLatestBreakoutPlanAsync(string symbol);
+
+    /// <summary>
     /// Lưu session trading (useAiStructure + danh sách timeframe) sau initialize.
     /// </summary>
     Task SetSymbolSessionAsync(string symbol, SymbolTradingSession session);

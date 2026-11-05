@@ -33,7 +33,7 @@ PHẦN 1: QUY TẮC NHẬN DIỆN MÔ HÌNH (PATTERN-RECOGNITION SKILL)
    - Các cây nến đứng cạnh nhau hoặc chỉ cách nhau 1-2 nến tại cùng vùng giá chỉ được tính là 1 LẦN CHẠM DUY NHẤT (Nhiễu nến trong 1 nhịp).
    - ĐIỀU KIỆN TẠO SÓNG BẮT BUỘC: Giữa 2 lần chạm cùng một biên (ví dụ giữa Đỉnh 1 và Đỉnh 2), bắt buộc phải có một con sóng đối nghịch tách biệt (Retracement Wave):
      + Kéo dài tối thiểu từ 3 đến 5 cây nến trở lên.
-     + Biên độ lùi giá tối thiểu phải đạt >= 1.5 * ATR (khoảng 5 - 8 giá đối với XAUUSD).
+     + Biên độ lùi giá tối thiểu phải đạt >= 1.5 * ATR.
      + Phải tạo thành một Swing Point đối ứng rõ rệt ở giữa (có Đáy thung lũng giữa 2 Đỉnh, hoặc có Đỉnh nhô lên giữa 2 Đáy).
 
 2. QUY TẮC 3 GIAI ĐOẠN ĐỂ XÁC NHẬN CẢN:
@@ -61,16 +61,20 @@ PHẦN 2: QUY TẮC LẬP KỊCH BẢN BREAKOUT (BREAKOUT-SCENARIO-PLANNING SKIL
 - Nếu cấu trúc chưa đủ 2 lần chạm độc lập hoặc đang trong sóng đẩy đơn lẻ: `scenarios` PHẢI LÀ MẢNG RỖNG `[]`, `current_status = ""WAIT""` hoặc `""MONITOR""`. Tuyệt đối không sinh kịch bản rác!
 
 Khi đủ điều kiện mô hình:
-- Kịch bản A (Breakout Lên): Phá kháng cự/cạnh trên (đã có >= 2 lần chạm). Trigger = Cản trên + buffer (0.25 * ATR). Retest = kiểm tra lại cản làm hỗ trợ. SL cách trigger từ 5.0 đến 9.0 giá (đối với XAUUSD). TP1 = R:R 1:1.2, TP2 = R:R 1:2.2.
-- Kịch bản B (Breakdown Xuống): Phá hỗ trợ/cạnh dưới (đã có >= 2 lần chạm). Trigger = Cản dưới - buffer (0.25 * ATR). Retest = kiểm tra lại cản làm kháng cự. SL cách trigger từ 5.0 đến 9.0 giá. TP1 = R:R 1:1.2, TP2 = R:R 1:2.2.
+- Kịch bản A (Breakout Lên): Phá kháng cự/cạnh trên (đã có >= 2 lần chạm). Trigger = Cản trên + buffer (0.25 * ATR). Retest = kiểm tra lại cản làm hỗ trợ. SL đặt dưới đáy vùng cản vừa phá, cách trigger từ 1.2 đến 2.5 * ATR. TP = swing high / vùng cản kế tiếp có trong dữ liệu (R:R 1:1 đến 1:3), nếu không có thì R:R 1:1.2.
+- Kịch bản B (Breakdown Xuống): Phá hỗ trợ/cạnh dưới (đã có >= 2 lần chạm). Trigger = Cản dưới - buffer (0.25 * ATR). Retest = kiểm tra lại cản làm kháng cự. SL đặt trên đỉnh vùng hỗ trợ vừa phá, cách trigger từ 1.2 đến 2.5 * ATR. TP = swing low / vùng hỗ trợ kế tiếp có trong dữ liệu (R:R 1:1 đến 1:3), nếu không có thì R:R 1:1.2.
 
 QUY TẮC VÀNG CHO EA:
 - confirmation.condition: BREAKOUT_BUY => 'CLOSE_ABOVE_TRIGGER', BREAKOUT_SELL => 'CLOSE_BELOW_TRIGGER'.
 - confirmation.timeframe = khung nến xác nhận (ví dụ M5 hoặc M15).
 - retest.timeframe = M1 (nếu confirm M5) hoặc M5 (nếu confirm M15).
 - retest.condition = 'RETEST_THEN_CONTINUE'.
-- sl: Cách trigger từ 5.0 đến 9.0 giá (đối với XAUUSD).
-- tps: ĐÚNG 2 mốc [TP1, TP2], đặt sớm hơn cản 1 giá để bảo đảm cắn TP.
+- sl: Cách trigger từ 1.2 đến 2.5 * ATR.
+- tps: ĐÚNG 1 mốc [TP1], đặt sớm hơn cản kế tiếp một chút để bảo đảm cắn TP. EA tự chốt một phần volume khi lãi đủ số point cấu hình.
+- confirmation.patterns / retest.patterns: CHỈ dùng các mã STRONG_BODY | MARUBOZU | ENGULFING | PINBAR.
+- zone_low / zone_high: biên dưới / biên trên của vùng bị phá (kháng cự với BUY, hỗ trợ với SELL).
+- invalidation_price: BUY = zone_low - buffer, SELL = zone_high + buffer. Nến đóng ngược qua mức này trước khi vào lệnh = phá vỡ giả.
+- entry_mode: 'RETEST' (mặc định, chờ hồi về trigger) hoặc 'MOMENTUM' (chỉ khi nến phá vỡ rất mạnh và còn khoảng trống tới cản kế tiếp).
 
 ==================================================
 ĐỊNH DẠNG ĐẦU RA BẮT BUỘC:
@@ -110,16 +114,20 @@ Schema JSON:
         ""trigger_price"": 3970.8,
         ""sl"": 3964.5,
         ""max_risk_usd"": 100,
-        ""tps"": [3978.5, 3986.5],
+        ""tps"": [3978.5],
+        ""zone_low"": 3968.0,
+        ""zone_high"": 3970.0,
+        ""invalidation_price"": 3967.2,
+        ""entry_mode"": ""RETEST"",
         ""confirmation"": {
           ""condition"": ""CLOSE_ABOVE_TRIGGER"",
           ""timeframe"": ""M5"",
-          ""patterns"": [""Bullish Marubozu""]
+          ""patterns"": [""STRONG_BODY""]
         },
         ""retest"": {
           ""timeframe"": ""M1"",
           ""condition"": ""RETEST_THEN_CONTINUE"",
-          ""patterns"": [""Pinbar"", ""Bullish Engulfing""]
+          ""patterns"": [""PINBAR"", ""ENGULFING""]
         },
         ""status"": ""PENDING""
       }

@@ -120,6 +120,24 @@ public class InMemoryMarketDataStore : IMarketDataStore
         }
     }
 
+    private static string BreakoutPlanKey(string symbol) => $"BreakoutPlan_{(symbol ?? string.Empty).Trim().ToUpperInvariant()}";
+
+    public Task SetLatestBreakoutPlanAsync(string symbol, Domain.AI.TradingPlanResponse plan)
+    {
+        lock (_lock) { _cache.Set(BreakoutPlanKey(symbol), plan); }
+        return Task.CompletedTask;
+    }
+
+    public Task<Domain.AI.TradingPlanResponse?> GetLatestBreakoutPlanAsync(string symbol)
+    {
+        lock (_lock)
+        {
+            if (_cache.TryGetValue(BreakoutPlanKey(symbol), out Domain.AI.TradingPlanResponse? plan))
+                return Task.FromResult(plan);
+            return Task.FromResult<Domain.AI.TradingPlanResponse?>(null);
+        }
+    }
+
     public Task SetSymbolSessionAsync(string symbol, SymbolTradingSession session)
     {
         var key = $"TradingSession_{symbol}";
