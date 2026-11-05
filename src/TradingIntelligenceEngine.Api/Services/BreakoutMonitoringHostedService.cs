@@ -10,22 +10,26 @@ using TradingIntelligenceEngine.Domain.Configuration;
 namespace TradingIntelligenceEngine.Api.Services;
 
 /// <summary>
-/// Hosted Service: Tự động chạy ngay khi khởi động chương trình,
-/// sau đó lặp lại định kỳ mỗi 15 phút để lấy nến từ Mobius API và nhận diện kịch bản Breakout.
+/// Hosted Service: định kỳ quét lại các symbol mà EA đã yêu cầu qua API POST /api/v1/breakout/scan,
+/// dùng đúng tham số EA gửi (symbol, khung nến, số nến, rủi ro, chế độ AI/Quant, notify).
+/// Không tự quét theo appsettings; symbol ngừng được quét khi EA không còn gọi scan / poll kế hoạch.
 /// </summary>
 public class BreakoutMonitoringHostedService : BackgroundService
 {
     private readonly IServiceProvider _serviceProvider;
     private readonly BreakoutOptions _options;
+    private readonly BreakoutScanRegistry _registry;
     private readonly ILogger<BreakoutMonitoringHostedService> _logger;
 
     public BreakoutMonitoringHostedService(
         IServiceProvider serviceProvider,
         BreakoutOptions options,
+        BreakoutScanRegistry registry,
         ILogger<BreakoutMonitoringHostedService> logger)
     {
         _serviceProvider = serviceProvider;
         _options = options;
+        _registry = registry;
         _logger = logger;
     }
 
@@ -38,55 +42,64 @@ public class BreakoutMonitoringHostedService : BackgroundService
         }
 
         var intervalMinutes = _options.IntervalMinutes > 0 ? _options.IntervalMinutes : 15;
-        _logger.LogInformation("Khởi động BreakoutMonitoringHostedService. Chu kỳ quét: mỗi {Minutes} phút.", intervalMinutes);
+        _logger.LogInformation(
+            "Khởi động BreakoutMonitoringHostedService. Chu kỳ quét lại: mỗi {Minutes} phút, chỉ cho các symbol EA đã gửi API scan.",
+            intervalMinutes);
 
-        // Đợi 2 giây để Web server và DI container khởi động hoàn toàn
-        await Task.Delay(2000, stoppingToken);
-
-        // 1. Chỉ quét lần đầu tiên lúc khởi động nếu ScanOnStartup = true
-        if (_options.ScanOnStartup)
-        {
-            _logger.LogInformation("BreakoutMonitoringHostedService: ScanOnStartup = true. Thực hiện quét ngay lúc khởi động...");
-            await ExecuteScanSafelyAsync(stoppingToken);
-        }
-        else
-        {
-            _logger.LogInformation("BreakoutMonitoringHostedService: ScanOnStartup = false. Chưa thiết lập kịch bản ban đầu, chờ lệnh Scan và thông số từ EA / API.");
-        }
-
-        // 2. Chạy lặp lại định kỳ mỗi 15 phút
         using var timer = new PeriodicTimer(TimeSpan.FromMinutes(intervalMinutes));
         while (!stoppingToken.IsCancellationRequested && await timer.WaitForNextTickAsync(stoppingToken))
         {
-            await ExecuteScanSafelyAsync(stoppingToken);
+            await RescanRegisteredSymbolsAsync(stoppingToken);
         }
     }
 
-    private async Task ExecuteScanSafelyAsync(CancellationToken stoppingToken)
+    private async Task RescanRegisteredSymbolsAsync(CancellationToken stoppingToken)
     {
-        try
+        var ttl = TimeSpan.FromMinutes(_options.SubscriptionTtlMinutes > 0 ? _options.SubscriptionTtlMinutes : 30);
+        var requests = _registry.GetActive(ttl);
+        if (requests.Count == 0)
         {
-            _logger.LogInformation("⏰ Bắt đầu chu kỳ quét nến Mobius & nhận diện mô hình Breakout...");
-            using var scope = _serviceProvider.CreateScope();
-            var breakoutService = scope.ServiceProvider.GetRequiredService<IBreakoutPatternService>();
-
-            var result = await breakoutService.AnalyzeAndExecuteBreakoutSyncAsync(
-                cancellationToken: stoppingToken);
-
-            _logger.LogInformation(
-                "✅ Hoàn tất chu kỳ quét Breakout cho {Symbol}. Mô hình: {Pattern} ({Status}). Số kịch bản: {ScenariosCount}",
-                result.PatternRecognition.Symbol,
-                result.PatternRecognition.PrimaryPattern.Name,
-                result.PatternRecognition.PrimaryPattern.Status,
-                result.TradingPlan.Scenarios.Count);
+            _logger.LogInformation("⏰ Chu kỳ quét Breakout: chưa có EA nào đăng ký scan (hoặc EA đã ngừng hoạt động). Bỏ qua.");
+            return;
         }
-        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+
+        foreach (var request in requests)
         {
-            _logger.LogInformation("Dừng chu kỳ quét Breakout do ứng dụng đang tắt.");
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "❌ Lỗi trong quá trình quét Breakout định kỳ.");
+            try
+            {
+                _logger.LogInformation(
+                    "⏰ Quét lại Breakout cho {Symbol} theo tham số EA ({Interval}, limit={Limit}, risk={Risk}, [{PMode}/{SMode}])",
+                    request.Symbol, request.Interval, request.Limit, request.MaxRiskUsd, request.PatternMode, request.ScenarioMode);
+
+                using var scope = _serviceProvider.CreateScope();
+                var breakoutService = scope.ServiceProvider.GetRequiredService<IBreakoutPatternService>();
+
+                var result = await breakoutService.AnalyzeAndExecuteBreakoutSyncAsync(
+                    symbol: request.Symbol,
+                    interval: request.Interval,
+                    limit: request.Limit,
+                    maxRiskUsd: request.MaxRiskUsd,
+                    patternMode: request.PatternMode,
+                    scenarioMode: request.ScenarioMode,
+                    notify: request.Notify,
+                    cancellationToken: stoppingToken);
+
+                _logger.LogInformation(
+                    "✅ Hoàn tất quét Breakout cho {Symbol}. Mô hình: {Pattern} ({Status}). Số kịch bản: {ScenariosCount}",
+                    result.PatternRecognition.Symbol,
+                    result.PatternRecognition.PrimaryPattern.Name,
+                    result.PatternRecognition.PrimaryPattern.Status,
+                    result.TradingPlan.Scenarios.Count);
+            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            {
+                _logger.LogInformation("Dừng chu kỳ quét Breakout do ứng dụng đang tắt.");
+                return;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "❌ Lỗi khi quét lại Breakout cho {Symbol}.", request.Symbol);
+            }
         }
     }
 }

@@ -113,6 +113,7 @@ builder.Services.AddHttpClient<IAiBreakoutEngine, LlmBreakoutEngine>(client =>
 });
 builder.Services.AddHttpClient<IMobiusStrategyService, TradingIntelligenceEngine.Api.Services.MobiusStrategyService>();
 builder.Services.AddHttpClient<IMobiusKlinesClient, MobiusKlinesClient>();
+builder.Services.AddSingleton<TradingIntelligenceEngine.Api.Services.BreakoutScanRegistry>();
 builder.Services.AddTransient<IBreakoutPatternService, BreakoutPatternService>();
 builder.Services.AddHostedService<BreakoutMonitoringHostedService>();
 

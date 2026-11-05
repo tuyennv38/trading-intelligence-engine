@@ -10,6 +10,7 @@ using TradingIntelligenceEngine.Domain.AI;
 using TradingIntelligenceEngine.Domain.Configuration;
 using TradingIntelligenceEngine.Domain.MarketData;
 using TradingIntelligenceEngine.Domain.MarketStructure;
+using System.Threading;
 using TradingIntelligenceEngine.MarketStructure.Swings;
 using Xunit;
 
@@ -328,7 +329,7 @@ public class BreakoutPatternServiceTests
             new SwingDetector(), new SwingOptions { FractalStrength = 2, MinAtrMultiplier = 0.1m },
             NullLogger<BreakoutPatternService>.Instance);
 
-        var result = await service.AnalyzeAndExecuteBreakoutSyncAsync("XAUUSD", "5m", 40, notify: false);
+        var result = await service.AnalyzeAndExecuteBreakoutSyncAsync("XAUUSD", "5m", 40, maxRiskUsd: 50m, patternMode: "Quant", scenarioMode: "Quant", notify: false);
 
         Assert.Equal("RECTANGLE", result.PatternRecognition.PrimaryPattern.Name);
         Assert.Contains(result.TradingPlan.Scenarios, s => s.IsBuy && s.IsBreakout && s.TriggerPrice > 0);
@@ -339,24 +340,75 @@ public class BreakoutPatternServiceTests
         Assert.Equal(result.TradingPlan.SignalId, store.SavedBreakoutPlan!.SignalId);
     }
 
-    [Fact]
-    public async Task Analyze_QueryOverrides_DoNotMutateSharedOptions()
+    private sealed class CountingAiEngine : IAiBreakoutEngine
     {
-        long baseTime = DateTimeOffset.UtcNow.AddDays(-1).ToUnixTimeSeconds();
-        var raw = Enumerable.Range(0, 40).Select(i => new RawCandleDto
+        public int Calls { get; private set; }
+
+        public Task<BreakoutScenarioResult> AnalyzeBreakoutWithSkillsAsync(string symbol, string timeframe, IReadOnlyList<AiCandleInput> candles, decimal maxRiskUsd = 100m, CancellationToken cancellationToken = default)
         {
-            Time = baseTime + i * 300, Open = 2005m, High = 2006m, Low = 2004m, Close = 2005m, TickVolume = 100
+            Calls++;
+            throw new InvalidOperationException("AI unavailable");
+        }
+
+        public Task<BreakoutScenarioResult> PlanScenarioWithAiAsync(PatternRecognitionResult patternResult, IReadOnlyList<AiCandleInput> candles, decimal maxRiskUsd = 100m, CancellationToken cancellationToken = default)
+        {
+            Calls++;
+            throw new InvalidOperationException("AI unavailable");
+        }
+    }
+
+    private static List<RawCandleDto> FlatRaw(int count) =>
+        Enumerable.Range(0, count).Select(i => new RawCandleDto
+        {
+            Time = DateTimeOffset.UtcNow.AddDays(-1).ToUnixTimeSeconds() + i * 300,
+            Open = 2005m, High = 2006m, Low = 2004m, Close = 2005m, TickVolume = 100
         }).ToList();
-        var options = new BreakoutOptions { MaxRiskUsd = 100m, PatternMode = "QUANT", ScenarioMode = "QUANT" };
+
+    [Fact]
+    public async Task Analyze_MissingScanParameters_Throws_NoAppSettingsDefaults()
+    {
+        var service = CreateService(new StubSwingDetector());
+
+        var ex = await Assert.ThrowsAsync<ArgumentException>(() =>
+            service.AnalyzeAndExecuteBreakoutSyncAsync(notify: false));
+
+        Assert.Contains("symbol", ex.Message);
+        Assert.Contains("patternMode", ex.Message);
+        Assert.Contains("scenarioMode", ex.Message);
+    }
+
+    [Fact]
+    public async Task Analyze_QuantModes_NeverCallAi_EvenWhenAiConfigured()
+    {
+        var ai = new CountingAiEngine();
         var service = new BreakoutPatternService(
-            new MockKlinesClient(raw), new MockMarketDataStore(), options,
-            new StubSwingDetector(), new SwingOptions(), NullLogger<BreakoutPatternService>.Instance);
+            new MockKlinesClient(FlatRaw(40)), new MockMarketDataStore(), new BreakoutOptions(),
+            new StubSwingDetector(), new SwingOptions(), NullLogger<BreakoutPatternService>.Instance,
+            aiBreakoutEngine: ai, aiProviderOptions: new AiProviderOptions { BaseUrl = "http://ai.local" });
 
-        await service.AnalyzeAndExecuteBreakoutSyncAsync("XAUUSD", "5m", 40, maxRiskUsd: 30m, patternMode: "AI", scenarioMode: "AI", notify: false);
+        var result = await service.AnalyzeAndExecuteBreakoutSyncAsync("XAUUSD", "5m", 40, maxRiskUsd: 30m, patternMode: "Quant", scenarioMode: "Quant", notify: false);
 
-        Assert.Equal(100m, options.MaxRiskUsd);
-        Assert.Equal("QUANT", options.PatternMode);
-        Assert.Equal("QUANT", options.ScenarioMode);
+        Assert.Equal(0, ai.Calls);
+        Assert.Equal(30m, result.TradingPlan.MaxRiskUsd);
+    }
+
+    [Fact]
+    public void ScanRegistry_KeepsEaParameters_AndExpiresInactiveSymbols()
+    {
+        var registry = new TradingIntelligenceEngine.Api.Services.BreakoutScanRegistry();
+        var request = new TradingIntelligenceEngine.Api.Services.BreakoutScanRequest("xauusd", "5m", 240, 50m, "Quant", "Quant", true);
+
+        registry.Register(request);
+        registry.Touch("XAUUSD");
+
+        var active = registry.GetActive(TimeSpan.FromMinutes(30));
+        Assert.Single(active);
+        Assert.Equal("Quant", active[0].PatternMode);
+        Assert.Equal(240, active[0].Limit);
+        Assert.Same(request, registry.Get("XAUUSD"));
+
+        // EA không còn hoạt động (quá TTL) -> job không quét symbol này nữa
+        Assert.Empty(registry.GetActive(TimeSpan.FromTicks(-TimeSpan.TicksPerMinute)));
     }
 
     [Theory]

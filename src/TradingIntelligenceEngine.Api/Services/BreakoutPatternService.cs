@@ -517,14 +517,23 @@ public class BreakoutPatternService : IBreakoutPatternService
         bool notify = true,
         CancellationToken cancellationToken = default)
     {
-        symbol = string.IsNullOrWhiteSpace(symbol) ? _options.Symbol : symbol.Trim().ToUpperInvariant();
-        interval = string.IsNullOrWhiteSpace(interval) ? _options.Interval : interval.Trim();
-        var limitVal = limit.HasValue && limit.Value > 0 ? limit.Value : _options.Limit;
+        // Toàn bộ tham số quét do client (EA) gửi qua API scan; không có giá trị mặc định từ appsettings
+        var missing = new List<string>();
+        if (string.IsNullOrWhiteSpace(symbol)) missing.Add("symbol");
+        if (string.IsNullOrWhiteSpace(interval)) missing.Add("interval");
+        if (!limit.HasValue || limit.Value <= 0) missing.Add("limit");
+        if (!maxRiskUsd.HasValue || maxRiskUsd.Value <= 0) missing.Add("maxRiskUsd");
+        if (string.IsNullOrWhiteSpace(patternMode)) missing.Add("patternMode");
+        if (string.IsNullOrWhiteSpace(scenarioMode)) missing.Add("scenarioMode");
+        if (missing.Count > 0)
+            throw new ArgumentException($"Thiếu tham số scan: {string.Join(", ", missing)}.");
 
-        // Tham số truyền vào chỉ áp dụng cho lần quét này, không ghi đè cấu hình dùng chung (job định kỳ, client khác)
-        var riskVal = maxRiskUsd.HasValue && maxRiskUsd.Value > 0 ? maxRiskUsd.Value : _options.MaxRiskUsd;
-        var effPatternMode = NormalizeMode(string.IsNullOrWhiteSpace(patternMode) ? _options.PatternMode : patternMode);
-        var effScenarioMode = NormalizeMode(string.IsNullOrWhiteSpace(scenarioMode) ? _options.ScenarioMode : scenarioMode);
+        symbol = symbol!.Trim().ToUpperInvariant();
+        interval = interval!.Trim();
+        var limitVal = limit!.Value;
+        var riskVal = maxRiskUsd!.Value;
+        var effPatternMode = NormalizeMode(patternMode);
+        var effScenarioMode = NormalizeMode(scenarioMode);
 
         _logger.LogInformation("Khởi động quy trình Breakout Sync cho {Symbol} ({Interval}, limit={Limit}). Chế độ: [Pattern: {PMode}, Scenario: {SMode}]",
             symbol, interval, limitVal, effPatternMode, effScenarioMode);
@@ -650,7 +659,7 @@ public class BreakoutPatternService : IBreakoutPatternService
             symbol, scenarioResult.PatternRecognition.PrimaryPattern.Name, scenarioResult.PatternRecognition.PrimaryPattern.Status, engineMode);
 
         // 5. Gửi thông báo nếu có cấu hình
-        if (notify && _notifier != null && _options.NotifyOnScan)
+        if (notify && _notifier != null)
         {
             var message = FormatGoogleChatMessage(scenarioResult, engineMode, fallbackReason);
             try

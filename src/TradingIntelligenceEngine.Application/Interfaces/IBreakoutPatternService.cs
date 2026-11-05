@@ -30,7 +30,8 @@ public interface IBreakoutPatternService
 
     /// <summary>
     /// Luồng tự động: Lấy nến từ Mobius API, nhận diện cấu trúc, tạo kịch bản breakout, lưu vào Store và bắn thông báo.
-    /// patternMode & scenarioMode: "AI" hoặc "Quant" (nếu null sẽ lấy theo cấu hình trong appsettings/BreakoutOptions).
+    /// Toàn bộ tham số (symbol, interval, limit, maxRiskUsd, patternMode "AI"/"Quant", scenarioMode "AI"/"Quant") là bắt buộc,
+    /// do client gửi qua API scan; thiếu tham số sẽ ném ArgumentException.
     /// </summary>
     Task<BreakoutScenarioResult> AnalyzeAndExecuteBreakoutSyncAsync(
         string? symbol = null,

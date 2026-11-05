@@ -66,11 +66,13 @@ public class MobiusKlinesClient : IMobiusKlinesClient
         string market = "spot",
         CancellationToken cancellationToken = default)
     {
-        symbol = string.IsNullOrWhiteSpace(symbol) ? _options.Symbol : symbol.Trim().ToUpperInvariant();
-        interval = string.IsNullOrWhiteSpace(interval) ? _options.Interval : interval.Trim();
+        if (string.IsNullOrWhiteSpace(symbol)) throw new ArgumentException("Thiếu symbol khi lấy nến Mobius.", nameof(symbol));
+        if (string.IsNullOrWhiteSpace(interval)) throw new ArgumentException("Thiếu interval khi lấy nến Mobius.", nameof(interval));
+        if (limit <= 0) throw new ArgumentException("limit phải > 0 khi lấy nến Mobius.", nameof(limit));
+        symbol = symbol.Trim().ToUpperInvariant();
+        interval = interval.Trim();
         exchange = string.IsNullOrWhiteSpace(exchange) ? _options.Exchange : exchange.Trim();
         market = string.IsNullOrWhiteSpace(market) ? _options.Market : market.Trim();
-        if (limit <= 0) limit = _options.Limit > 0 ? _options.Limit : 60;
 
         var baseUrl = _options.KlinesApiUrl.TrimEnd('/');
         var url = $"{baseUrl}?exchange={Uri.EscapeDataString(exchange)}&market={Uri.EscapeDataString(market)}&symbol={Uri.EscapeDataString(symbol)}&interval={Uri.EscapeDataString(interval)}&limit={limit}";
