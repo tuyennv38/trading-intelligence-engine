@@ -1,9 +1,13 @@
 using System;
+using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging;
+using TradingIntelligenceEngine.Application.DTOs.MarketData;
 using TradingIntelligenceEngine.Application.Interfaces;
+using TradingIntelligenceEngine.Domain.MarketData;
 using TradingIntelligenceEngine.Domain.MarketStructure;
 
 namespace TradingIntelligenceEngine.Api.Controllers;
@@ -71,6 +75,49 @@ public class BreakoutController : ControllerBase
     }
 
     /// <summary>
+    /// Chạy thử thuật toán Quant trên một đoạn nến tự cung cấp (dry-run): KHÔNG gọi AI, KHÔNG lưu plan vào Store,
+    /// KHÔNG gửi thông báo, KHÔNG ảnh hưởng EA. Toàn bộ nến được coi là đã đóng.
+    /// </summary>
+    [HttpPost("analyze")]
+    public async Task<IActionResult> AnalyzeCandles(
+        [FromBody] BreakoutAnalyzeRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        if (request.Candles == null || request.Candles.Count < 20)
+            return BadRequest(new { success = false, message = "Cần tối thiểu 20 nến (khuyến nghị 60) để nhận diện mô hình." });
+
+        List<Candle> candles;
+        try
+        {
+            candles = request.Candles
+                .OrderBy(c => c.Time)
+                .Select(c => new Candle(
+                    DateTimeOffset.FromUnixTimeSeconds(c.Time > 100_000_000_000L ? c.Time / 1000 : c.Time),
+                    c.Open, c.High, c.Low, c.Close, c.TickVolume))
+                .ToList();
+        }
+        catch (ArgumentException ex)
+        {
+            return BadRequest(new { success = false, message = $"Dữ liệu nến không hợp lệ: {ex.Message}" });
+        }
+
+        var symbol = string.IsNullOrWhiteSpace(request.Symbol) ? "XAUUSD" : request.Symbol.Trim().ToUpperInvariant();
+        var timeframe = string.IsNullOrWhiteSpace(request.Timeframe) ? "M5" : request.Timeframe.Trim().ToUpperInvariant();
+
+        var pattern = await _breakoutService.RecognizePatternAsync(symbol, timeframe, candles, cancellationToken);
+        var result = await _breakoutService.PlanBreakoutScenarioAsync(pattern, candles, request.MaxRiskUsd, cancellationToken);
+
+        return Ok(new
+        {
+            success = true,
+            engine = "QUANT (dry-run)",
+            candles_used = candles.Count,
+            has_breakout_scenario = result.TradingPlan.Scenarios.Count > 0,
+            data = result
+        });
+    }
+
+    /// <summary>
     /// Lấy kế hoạch kịch bản Breakout mới nhất đang lưu trong Store cho Symbol.
     /// </summary>
     [HttpGet("latest/{symbol}")]
@@ -93,4 +140,17 @@ public class BreakoutController : ControllerBase
             plan = plan
         });
     }
+}
+
+public class BreakoutAnalyzeRequest
+{
+    public string? Symbol { get; set; }
+
+    /// <summary>Khung thời gian của nến, ví dụ M5, M15.</summary>
+    public string? Timeframe { get; set; }
+
+    public decimal MaxRiskUsd { get; set; } = 100m;
+
+    /// <summary>Nến OHLCV; time là Unix timestamp (giây hoặc mili-giây) của thời điểm mở nến.</summary>
+    public List<RawCandleDto> Candles { get; set; } = new();
 }

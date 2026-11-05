@@ -37,4 +37,15 @@ public sealed class BreakoutOptions
     /// Tự động chuyển về Quant nếu AI gặp sự cố (quá tải rate limit, mất mạng, v.v.)
     /// </summary>
     public bool EnableFallbackToQuant { get; set; } = true;
+
+    /// <summary>
+    /// Nếu true: chỉ lập kịch bản breakout khi mô hình đã CONFIRMED (mô hình POTENTIAL/DEVELOPING chỉ theo dõi).
+    /// Nếu false (mặc định): lập kịch bản cho từng biên đã có tối thiểu 2 lần chạm độc lập, bất kể nhãn mô hình.
+    /// </summary>
+    public bool RequireConfirmedPattern { get; set; } = false;
+
+    /// <summary>
+    /// Bỏ kịch bản (NO_CHASE) nếu giá đã vượt trigger quá số lần ATR này.
+    /// </summary>
+    public decimal NoChaseAtr { get; set; } = 1.0m;
 }
